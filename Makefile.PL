@@ -1,4 +1,4 @@
-#!/usr/bin/perl
+#!/usr/bin/env perl
 
 use v5.14;
 use strict;
@@ -25,8 +25,6 @@ WriteMakefile(
         'Time::HiRes'         => 0,
         'Digest::MD5'         => 0,
         'Type::Params'        => 0,
-        'Scalar::Util'        => 0,
-        'JSON::MaybeXS'       => 0,
         'Types::Standard'     => 0,
     },
     dist  => { COMPRESS => 'gzip -9f', SUFFIX => 'gz', },

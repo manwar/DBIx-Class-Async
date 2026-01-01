@@ -27,9 +27,7 @@ use IO::Async::Function;
 use Time::HiRes qw(time);
 use Digest::MD5 qw(md5_hex);
 use Type::Params qw(compile);
-use Scalar::Util qw(blessed);
-use JSON::MaybeXS qw(encode_json decode_json);
-use Types::Standard qw(Str HashRef ArrayRef Maybe Optional Int CodeRef);
+use Types::Standard qw(Str HashRef ArrayRef Maybe Int CodeRef);
 
 use constant {
     DEFAULT_WORKERS       => 4,
