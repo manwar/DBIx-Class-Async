@@ -1,6 +1,6 @@
 package DBIx::Class::Async;
 
-$DBIx::Class::Async::VERSION   = '0.01';
+$DBIx::Class::Async::VERSION   = '0.02';
 $DBIx::Class::Async::AUTHORITY = 'cpan:MANWAR';
 
 =head1 NAME
@@ -9,7 +9,7 @@ DBIx::Class::Async - Asynchronous database operations for DBIx::Class
 
 =head1 VERSION
 
-Version 0.01
+Version 0.02
 
 =cut
 
@@ -1120,6 +1120,95 @@ sub schema_class {
     return $self->{schema_class};
 }
 
+=head2 update_bulk
+
+    $db->update_bulk($table, $condition, $data);
+
+Performs a bulk update operation on multiple rows in the specified table.
+
+This method updates all rows in the given table that match the specified
+conditions with the provided data values. It is particularly useful for
+batch operations where multiple records need to be modified with the same
+set of changes.
+
+=over 4
+
+=item Parameters
+
+=over 8
+
+=item C<$table>
+
+The name of the table to update (String, required).
+
+=item C<$condition>
+
+A hash reference specifying the WHERE conditions for selecting rows to update.
+Each key-value pair in the hash represents a column and its required value.
+Rows matching ALL conditions will be updated (HashRef, required).
+
+Example: C<< { status => 'pending', active => 1 } >>
+
+=item C<$data>
+
+A hash reference containing the column-value pairs to update.
+Each key-value pair specifies a column and its new value (HashRef, required).
+
+Example: C<< { status => 'processed', updated_at => '2024-01-01 10:00:00' } >>
+
+=back
+
+=item Returns
+
+Returns the result of the update operation from the worker. Typically this
+would be the number of rows affected or a success indicator, depending on
+your worker implementation.
+
+=item Exceptions
+
+=over 4
+
+=item *
+
+Throws a validation error if any parameter does not match the expected type.
+
+=item *
+
+Throws an exception if the underlying worker call fails.
+
+=back
+
+=item Examples
+
+    # Update all pending orders from a specific customer
+    my $result = $db->update_bulk(
+        'orders',
+        { customer_id => 123, status => 'pending' },
+        { status => 'processed', processed_at => \'NOW()' }
+    );
+
+    print "Updated $result rows\n";
+
+    # Deactivate all users who haven't logged in since 2023
+    $db->update_bulk(
+        'users',
+        { last_login => { '<' => '2023-01-01' } },
+        { active => 0, deactivation_date => \'CURRENT_DATE' }
+    );
+
+=back
+
+=cut
+
+sub update_bulk {
+    my ($self, $table, $condition, $data) = @_;
+
+    state $check = compile(Str, HashRef, HashRef);
+    $check->($table, $condition, $data);
+
+    return $self->_call_worker('update_bulk', $table, $condition, $data);
+}
+
 #
 #
 # INTERNAL METHODS
@@ -1150,9 +1239,15 @@ sub _execute_operation {
         return $row ? {$row->get_columns} : undef;
     }
     elsif ($operation eq 'create') {
-        my ($resultset, $data) = @args;
-        my $row = $schema->resultset($resultset)->create($data);
-        return {$row->get_columns};
+        my ($source_name, $data) = @args;
+        try {
+            my $rs  = $schema->resultset($source_name);
+            my $row = $rs->create($data);
+            return { $row->get_columns };
+        }
+        catch {
+            return { __error => $_ };
+        }
     }
     elsif ($operation eq 'update') {
         my ($resultset, $id, $data) = @args;
@@ -1160,6 +1255,21 @@ sub _execute_operation {
         return undef unless $row;
         $row->update($data);
         return {$row->get_columns};
+    }
+    elsif ($operation eq 'update_bulk') {
+        my ($source_name, $condition, $data) = @args;
+
+        try {
+            my $resultset = $schema->resultset($source_name);
+            $resultset = $resultset->search($condition)
+                if $condition && %$condition;
+            my $count = $resultset->update($data);
+
+            return $count;
+        }
+        catch {
+            return 0;
+        }
     }
     elsif ($operation eq 'delete') {
         my ($resultset, $id) = @args;

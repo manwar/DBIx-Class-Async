@@ -34,6 +34,26 @@ WriteMakefile(
         provides    => {
             'DBIx::Class::Async' => {
                 file    => 'lib/DBIx/Class/Async.pm',
+                version => '0.02'
+            },
+            'DBIx::Class::Async::ResultSet' => {
+                file    => 'lib/DBIx/Class/Async/ResultSet.pm',
+                version => '0.02'
+            },
+            'DBIx::Class::Async::Row' => {
+                file    => 'lib/DBIx/Class/Async/Row.pm',
+                version => '0.02'
+            },
+            'DBIx::Class::Async::Schema' => {
+                file    => 'lib/DBIx/Class/Async/Schema.pm',
+                version => '0.02'
+            },
+            'DBIx::Class::Async::Storage' => {
+                file    => 'lib/DBIx/Class/Async/Storage.pm',
+                version => '0.02'
+            },
+            'DBIx::Class::Async::TxnGuard' => {
+                file    => 'lib/DBIx/Class/Async/TxnGuard.pm',
                 version => '0.01'
             },
         },

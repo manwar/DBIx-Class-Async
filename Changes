@@ -1,4 +1,13 @@
 Revision history for DBIx::Class::Async
 
+0.02  2026-01-04
+      - Added initial draft to support following async operations:
+        - DBIx::Class::Async::Row
+        - DBIx::Class::Async::ResultSet
+        - DBIx::Class::Async::Schema
+        - DBIx::Class::Async::Storage
+     - Also added template for the following:
+        - DBIx::Class::Async::TxnGuard
+
 0.01  2026-01-01
       - Module Created.
