@@ -13,7 +13,7 @@ use DBIx::Class::Async::Storage;
 use DBIx::Class::Async::TxnGuard;
 use DBIx::Class::Async::ResultSet;
 
-our $VERSION = '0.04';
+our $VERSION = '0.05';
 
 =head1 NAME
 
@@ -21,7 +21,7 @@ DBIx::Class::Async::Schema - Asynchronous Schema for DBIx::Class::Async
 
 =head1 VERSION
 
-Version 0.04
+Version 0.05
 
 =cut
 
@@ -32,13 +32,12 @@ Version 0.04
     # Connect with async options
     my $schema = DBIx::Class::Async::Schema->connect(
         'dbi:mysql:database=test',  # DBI connect string
-        'username',                  # Database username
-        'password',                  # Database password
-        { RaiseError => 1 },         # DBI options
-        {                            # Async options
+        'username',                 # Database username
+        'password',                 # Database password
+        { RaiseError => 1 },        # DBI options
+        {                           # Async options
             schema_class => 'MyApp::Schema',
             workers      => 4,
-            worker_class => 'MyApp::Worker',
         }
     );
 
@@ -96,14 +95,6 @@ The name of the DBIx::Class schema class to use (e.g., 'MyApp::Schema').
 =item C<workers>
 
 Number of worker processes (default: 4).
-
-=item C<worker_class>
-
-Custom worker class (default: L<DBIx::Class::Async::Worker>).
-
-=item C<worker_options>
-
-Additional options to pass to worker processes.
 
 =item C<connect_timeout>
 
