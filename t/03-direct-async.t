@@ -1,5 +1,5 @@
 #!/usr/bin/env perl
-# t/00-direct-async.t - Test DBIx::Class::Async directly
+
 use strict;
 use warnings;
 use utf8;
@@ -7,57 +7,43 @@ use utf8;
 use Test::More;
 use Test::Exception;
 
-# Add lib directories to @INC
 use FindBin qw($Bin);
 use lib "$Bin/../lib";
 use lib "$Bin/lib";
 
-# We need IO::Async::Loop
-use IO::Async::Loop;
-
-# Load modules
-BEGIN {
-    require DBIx::Class::Async;
-    require TestSchema;
-}
-
-
-# Create in-memory database
 use DBI;
+use TestSchema;
+use IO::Async::Loop;
+use DBIx::Class::Async;
 
-# Create a temporary file database
 use File::Temp;
 my ($fh, $db_file) = File::Temp::tempfile(SUFFIX => '.db', UNLINK => 1);
 
-# Use the file instead of :memory:
 my $dbh = DBI->connect("dbi:SQLite:dbname=$db_file", "", "", {
     RaiseError => 1,
     PrintError => 0,
 });
 
-
-# Create tables
 $dbh->do("
     CREATE TABLE users (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        name VARCHAR(50) NOT NULL,
-        email VARCHAR(100),
+        id     INTEGER PRIMARY KEY AUTOINCREMENT,
+        name   VARCHAR(50) NOT NULL,
+        email  VARCHAR(100),
         active INTEGER NOT NULL DEFAULT 1
     )
 ");
 
 $dbh->do("
     CREATE TABLE orders (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        id      INTEGER PRIMARY KEY AUTOINCREMENT,
         user_id INTEGER NOT NULL,
-        amount DECIMAL(10,2) NOT NULL,
-        status VARCHAR(20) NOT NULL DEFAULT 'pending'
+        amount  DECIMAL(10,2) NOT NULL,
+        status  VARCHAR(20) NOT NULL DEFAULT 'pending'
     )
 ");
 
 $dbh->disconnect;
 
-# Create event loop
 my $loop = IO::Async::Loop->new;
 
 # Test 1: Direct DBIx::Class::Async connection
@@ -80,7 +66,6 @@ subtest 'Direct async connection' => sub {
 
     isa_ok($async_db, 'DBIx::Class::Async');
 
-    # Test search
     my $search_future = $async_db->search('User', {});
     isa_ok($search_future, 'Future');
 

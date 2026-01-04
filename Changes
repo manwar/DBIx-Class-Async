@@ -1,6 +1,9 @@
 Revision history for DBIx::Class::Async
 
 0.02  2026-01-04
+      - Tidied up unit tests.
+
+0.02  2026-01-04
       - Added initial draft to support following async operations:
         - DBIx::Class::Async::Row
         - DBIx::Class::Async::ResultSet

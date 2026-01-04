@@ -1,6 +1,9 @@
+#!/usr/bin/env perl
+
 use strict;
 use warnings;
 use Test::More;
+
 use Future;
 use lib 't/lib';
 
@@ -8,17 +11,13 @@ use TestDB;
 use TestSchema;
 use DBIx::Class::Async;
 
-# Setup database
 my $db_file = TestDB::setup_test_db();
-
-# Create async instance
-my $async = DBIx::Class::Async->new(
+my $async   = DBIx::Class::Async->new(
     schema_class => 'TestSchema',
     connect_info => ["dbi:SQLite:dbname=$db_file", "", ""],
     workers      => 1,
 );
 
-# Minimal create test
 my $user_data = {
     name   => 'Eve',
     email  => 'eve@example.com',
@@ -37,14 +36,11 @@ is($user->{name}, 'Eve', 'name correct');
 is($user->{email}, 'eve@example.com', 'email correct');
 ok($user->{id}, 'id auto-generated');
 
-# Fetch back using async
 my $found_future = $async->find('User', $user->{id});
 my $found = $found_future->get;
 
 ok($found && $found->{email} eq 'eve@example.com', 'found user with correct email');
 
-# Cleanup
 TestDB::teardown_test_db();
 
 done_testing();
-

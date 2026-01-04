@@ -1,4 +1,5 @@
 #!/usr/bin/env perl
+
 use strict;
 use warnings;
 use utf8;
@@ -12,19 +13,14 @@ use DBIx::Class::Async::Schema;
 use lib 't/lib';
 use TestDB;
 
-# Setup test database
-my $db_file = setup_test_db();
-
-plan tests => 2;
-
-my $loop = IO::Async::Loop->new;
+my $db_file      = setup_test_db();
+my $loop         = IO::Async::Loop->new;
 my $schema_class = get_test_schema_class();
 
 # Test 1: Full workflow
 subtest 'Complete workflow' => sub {
     plan tests => 11;
 
-    # Connect
     my $schema = DBIx::Class::Async::Schema->connect(
         "dbi:SQLite:dbname=$db_file",
         undef,
@@ -35,9 +31,10 @@ subtest 'Complete workflow' => sub {
 
     # 1. Search with pagination - returns hashrefs, not Row objects
     my $users_rs = $schema->resultset('User')
-        ->search({ active => 1 }, { order_by => 'name', rows => 2 });
+                          ->search({ active   => 1 },
+                                   { order_by => 'name', rows => 2 });
 
-    my $users = $users_rs->all_future->get;
+    my $users      = $users_rs->all_future->get;
     my @user_names = map { $_->{name} } @$users;
 
     is_deeply(\@user_names, ['Alice', 'Bob'], 'Pagination works');
@@ -116,10 +113,8 @@ subtest 'Complete workflow' => sub {
     lives_ok { $schema->disconnect } 'Disconnect works';
 };
 
-
 # Test 2: Async behavior
 subtest 'Async behavior' => sub {
-    plan tests => 5;
 
     my $schema = DBIx::Class::Async::Schema->connect(
         "dbi:SQLite:dbname=$db_file",
@@ -129,7 +124,6 @@ subtest 'Async behavior' => sub {
         { workers => 2, schema_class => $schema_class, loop => $loop }
     );
 
-    # Multiple concurrent queries
     my @futures;
 
     push @futures, $schema->resultset('User')->count_future;
@@ -164,7 +158,6 @@ subtest 'Async behavior' => sub {
     $schema->disconnect;
 };
 
-# Cleanup
 teardown_test_db();
 
 done_testing();

@@ -1,5 +1,5 @@
 #!/usr/bin/env perl
-# t/01-basic.t - Basic tests with FILE database
+
 use strict;
 use warnings;
 use utf8;
@@ -8,23 +8,17 @@ use Test::More;
 use Test::Exception;
 use File::Temp;
 
-# Add lib directories to @INC
 use FindBin qw($Bin);
 use lib "$Bin/../lib";
 use lib "$Bin/lib";
 
-# Load modules
-BEGIN {
-    require DBIx::Class::Async;
-    require DBIx::Class::Async::Schema;
-    require TestSchema;
-}
+use DBI;
+use DBIx::Class::Async;
+use DBIx::Class::Async::Schema;
+use TestSchema;
 
-# Create temporary database FILE (not :memory:)
 my ($fh, $db_file) = File::Temp::tempfile(SUFFIX => '.db', UNLINK => 1);
 
-# Create tables in the file
-use DBI;
 my $dbh = DBI->connect("dbi:SQLite:dbname=$db_file", "", "", {
     RaiseError => 1,
     PrintError => 0,
@@ -32,19 +26,19 @@ my $dbh = DBI->connect("dbi:SQLite:dbname=$db_file", "", "", {
 
 $dbh->do("
     CREATE TABLE users (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        name VARCHAR(50) NOT NULL,
-        email VARCHAR(100),
+        id     INTEGER PRIMARY KEY AUTOINCREMENT,
+        name   VARCHAR(50) NOT NULL,
+        email  VARCHAR(100),
         active INTEGER NOT NULL DEFAULT 1
     )
 ");
 
 $dbh->do("
     CREATE TABLE orders (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        id      INTEGER PRIMARY KEY AUTOINCREMENT,
         user_id INTEGER NOT NULL,
-        amount DECIMAL(10,2) NOT NULL,
-        status VARCHAR(20) NOT NULL DEFAULT 'pending'
+        amount  DECIMAL(10,2) NOT NULL,
+        status  VARCHAR(20) NOT NULL DEFAULT 'pending'
     )
 ");
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env perl
-# t/01-simple-get.t - Simple test using get() directly - FIXED
+
 use strict;
 use warnings;
 use utf8;
@@ -7,24 +7,17 @@ use utf8;
 use Test::More;
 use Test::Exception;
 
-# Add lib directories to @INC
 use FindBin qw($Bin);
 use lib "$Bin/../lib";
 use lib "$Bin/lib";
 
-# Load modules
-BEGIN {
-    require DBIx::Class::Async;
-    require DBIx::Class::Async::Schema;
-    require TestSchema;
-}
-
-
-# We'll create database tables in a file so they persist
 use DBI;
-my $db_file = "test_$$.db";  # Unique file per test run
+use TestSchema;
+use IO::Async::Loop;
+use DBIx::Class::Async;
+use DBIx::Class::Async::Schema;
 
-# Clean up any existing file
+my $db_file = "test_$$.db";
 unlink $db_file if -e $db_file;
 
 my $dbh = DBI->connect("dbi:SQLite:dbname=$db_file", "", "", {
@@ -32,22 +25,21 @@ my $dbh = DBI->connect("dbi:SQLite:dbname=$db_file", "", "", {
     PrintError => 0,
 });
 
-# Create tables
 $dbh->do("
     CREATE TABLE users (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        name VARCHAR(50) NOT NULL,
-        email VARCHAR(100),
+        id     INTEGER PRIMARY KEY AUTOINCREMENT,
+        name   VARCHAR(50) NOT NULL,
+        email  VARCHAR(100),
         active INTEGER NOT NULL DEFAULT 1
     )
 ");
 
 $dbh->do("
     CREATE TABLE orders (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        id      INTEGER PRIMARY KEY AUTOINCREMENT,
         user_id INTEGER NOT NULL,
-        amount DECIMAL(10,2) NOT NULL,
-        status VARCHAR(20) NOT NULL DEFAULT 'pending'
+        amount  DECIMAL(10,2) NOT NULL,
+        status  VARCHAR(20) NOT NULL DEFAULT 'pending'
     )
 ");
 
@@ -56,10 +48,7 @@ $dbh->disconnect;
 # Test 1: Basic schema connection
 subtest 'Basic schema connection' => sub {
 
-    # Create fresh loop for this test
-    use IO::Async::Loop;
     my $loop = IO::Async::Loop->new;
-
     my $schema;
     lives_ok {
         $schema = DBIx::Class::Async::Schema->connect(
@@ -68,9 +57,9 @@ subtest 'Basic schema connection' => sub {
             undef,
             {},
             {
-                workers => 2,
+                workers      => 2,
                 schema_class => 'TestSchema',
-                loop => $loop
+                loop         => $loop
             }
         );
     } 'Schema connects successfully';
@@ -89,19 +78,16 @@ subtest 'Basic schema connection' => sub {
 # Test 2: Simple user CRUD
 subtest 'Simple user CRUD' => sub {
 
-    # Create fresh loop for this test
-    use IO::Async::Loop;
-    my $loop = IO::Async::Loop->new;
-
+    my $loop   = IO::Async::Loop->new;
     my $schema = DBIx::Class::Async::Schema->connect(
         "dbi:SQLite:dbname=$db_file",
         undef,
         undef,
         {},
         {
-            workers => 2,
+            workers      => 2,
             schema_class => 'TestSchema',
-            loop => $loop
+            loop         => $loop
         }
     );
 
@@ -110,8 +96,8 @@ subtest 'Simple user CRUD' => sub {
 
     # Create
     my $user = $user_rs->create({
-        name => 'Test User',
-        email => 'test@example.com',
+        name   => 'Test User',
+        email  => 'test@example.com',
         active => 1,
     })->get;
 
@@ -126,7 +112,7 @@ subtest 'Simple user CRUD' => sub {
 
     # Update
     my $updated = $found->update({
-        name => 'Updated User',
+        name   => 'Updated User',
         active => 0,
     })->get;
     is($updated->name, 'Updated User');
@@ -138,33 +124,30 @@ subtest 'Simple user CRUD' => sub {
 # Test 3: Order operations
 subtest 'Order operations' => sub {
 
-    # Create fresh loop for this test
-    use IO::Async::Loop;
-    my $loop = IO::Async::Loop->new;
-
+    my $loop   = IO::Async::Loop->new;
     my $schema = DBIx::Class::Async::Schema->connect(
         "dbi:SQLite:dbname=$db_file",
         undef,
         undef,
         {},
         {
-            workers => 2,
+            workers      => 2,
             schema_class => 'TestSchema',
-            loop => $loop
+            loop         => $loop
         }
     );
 
     # Create user
     my $user = $schema->resultset('User')->create({
-        name => 'Order User',
+        name  => 'Order User',
         email => 'order@example.com',
     })->get;
 
     # Create order
     my $order = $schema->resultset('Order')->create({
         user_id => $user->id,
-        amount => 49.99,
-        status => 'paid',
+        amount  => 49.99,
+        status  => 'paid',
     })->get;
 
     isa_ok($order, 'DBIx::Class::Async::Row');
@@ -187,62 +170,49 @@ subtest 'Order operations' => sub {
 # Test 4: Search and count
 subtest 'Search and count' => sub {
 
-    # Create fresh loop for this test
-    use IO::Async::Loop;
-    my $loop = IO::Async::Loop->new;
-
+    my $loop   = IO::Async::Loop->new;
     my $schema = DBIx::Class::Async::Schema->connect(
         "dbi:SQLite:dbname=$db_file",
         undef,
         undef,
         {},
         {
-            workers => 2,
+            workers      => 2,
             schema_class => 'TestSchema',
-            loop => $loop
+            loop         => $loop
         }
     );
 
     my $user_rs = $schema->resultset('User');
 
-    # Count before
-    #my $count_before = $user_rs->count->get;
-    #diag "Count before: $count_before";
-
     # Create test data
     $user_rs->create({ name => 'Search Test 1', email => 's1@test.com', active => 1 })->get;
     $user_rs->create({ name => 'Search Test 2', email => 's2@test.com', active => 0 })->get;
 
-
-    # Count before
     my $count_before = $user_rs->count->get;  # count() returns Future, so we need ->get
-    #diag "Count before: $count_before";
 
     # Create test data
     $user_rs->create({ name => 'Search Test 1', email => 's1@test.com', active => 1 })->get;
     $user_rs->create({ name => 'Search Test 2', email => 's2@test.com', active => 0 })->get;
 
-    # Count after
-    my $count_after = $user_rs->count->get;  # Same as above
-    #diag "Count after: $count_after";
+    my $count_after = $user_rs->count->get;
     is($count_after, $count_before + 2, 'Count increased');
 
     # Search active
-    my $active_search_rs = $user_rs->search({ active => 1 });
-    my $active_users_future = $active_search_rs->all_future;  # all_future() returns Future
-    my $active_users = $active_users_future->get;  # Get the actual results (arrayref)
+    my $active_search_rs    = $user_rs->search({ active => 1 });
+    my $active_users_future = $active_search_rs->all_future;
+    my $active_users        = $active_users_future->get;
     isa_ok($active_users, 'ARRAY', 'search returns array of rows');
 
     # Count active
-    my $active_count_rs = $user_rs->search({ active => 1 });
-    my $active_count_future = $active_count_rs->count_future;  # count_future() returns Future
-    my $active_count = $active_count_future->get;  # Get the count number
+    my $active_count_rs     = $user_rs->search({ active => 1 });
+    my $active_count_future = $active_count_rs->count_future;
+    my $active_count        = $active_count_future->get;
     cmp_ok($active_count, '>=', 1, 'Has active users');
 
     $schema->disconnect;
 };
 
-# Cleanup
 END {
     unlink $db_file if -e $db_file;
 }

@@ -13,12 +13,10 @@ use DBIx::Class::Async::Schema;
 use lib 't/lib';
 use TestDB;
 
-# Setup test database
-my $db_file = setup_test_db();
-
-my $loop = IO::Async::Loop->new;
+my $db_file      = setup_test_db();
+my $loop         = IO::Async::Loop->new;
 my $schema_class = get_test_schema_class();
-my $schema = DBIx::Class::Async::Schema->connect(
+my $schema       = DBIx::Class::Async::Schema->connect(
     "dbi:SQLite:dbname=$db_file",
     undef,
     undef,
@@ -56,14 +54,14 @@ subtest 'Search operations' => sub {
 
     # Test async search - search() builds query, all_future() executes
     my $search_rs = $rs->search({ active => 1 });
-    my $future = $search_rs->all_future;
+    my $future    = $search_rs->all_future;
     isa_ok($future, 'Future', 'all_future() returns Future');
 
     my $results = $future->get;
     isa_ok($results, 'ARRAY', 'Future resolves to array of rows');
 
     # Count active users using async
-    my $count_rs = $schema->resultset('User')->search({ active => 1 });
+    my $count_rs     = $schema->resultset('User')->search({ active => 1 });
     my $count_future = $count_rs->count_future;
     isa_ok($count_future, 'Future', 'count_future() returns Future');
 
@@ -72,11 +70,11 @@ subtest 'Search operations' => sub {
 
     # Search with attributes
     my $ordered_rs = $rs->search(
-        { active => 1 },
+        { active   => 1 },
         { order_by => 'name DESC', rows => 2 }
     );
 
-    my $ordered_future = $ordered_rs->all_future;
+    my $ordered_future  = $ordered_rs->all_future;
     my $ordered_results = $ordered_future->get;
 
     cmp_ok(scalar @$ordered_results, '==', 2, 'Limited to 2 rows');
@@ -87,8 +85,8 @@ subtest 'Search operations' => sub {
         or diag("Got names: @names");
 
     # Empty search
-    my $empty_rs = $rs->search({ active => 999 });
-    my $empty_future = $empty_rs->all_future;
+    my $empty_rs      = $rs->search({ active => 999 });
+    my $empty_future  = $empty_rs->all_future;
     my $empty_results = $empty_future->get;
     is(scalar @$empty_results, 0, 'No results for impossible condition');
 };
@@ -109,7 +107,7 @@ subtest 'Find operations' => sub {
 
     # Find non-existing
     my $not_found_future = $rs->find(999);
-    my $not_found = $not_found_future->get;
+    my $not_found        = $not_found_future->get;
     ok(!defined $not_found, 'find() returns undef for non-existing');
 
     # Find with string ID
@@ -123,8 +121,6 @@ subtest 'Find operations' => sub {
 
 # Test 4: Create operations
 subtest 'Create operations' => sub {
-    # If your subtest doesn't have a plan inside, it will auto-detect,
-    # but based on your code, you have 5 assertions.
 
     my $rs = $schema->resultset('User');
     my $new_user = {
@@ -149,7 +145,6 @@ subtest 'Create operations' => sub {
 # Test 5: Sync iteration (if you added next() method)
 subtest 'Sync iteration with next()' => sub {
 
-    # Skip if next() not implemented
     my $rs = $schema->resultset('User');
     if (!$rs->can('next')) {
         plan skip_all => 'next() method not implemented';
@@ -158,9 +153,9 @@ subtest 'Sync iteration with next()' => sub {
     my $search_rs = $rs->search({ active => 1 });
 
     # Get all results sync
-    my $future = $search_rs->all_future;
+    my $future        = $search_rs->all_future;
     my $async_results = $future->get;
-    my $async_count = scalar @$async_results;
+    my $async_count   = scalar @$async_results;
 
     # Iterate with next()
     $search_rs->reset;  # Start from beginning
@@ -210,7 +205,6 @@ subtest 'Update operations' => sub {
     cmp_ok($inactive_count, '>=', 1, 'Users were deactivated');
 };
 
-# Cleanup
 $schema->disconnect;
 teardown_test_db();
 

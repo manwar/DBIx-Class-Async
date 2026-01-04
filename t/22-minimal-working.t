@@ -1,5 +1,5 @@
 #!/usr/bin/env perl
-# t/minimal-working.t - Minimal working test
+
 use strict;
 use warnings;
 

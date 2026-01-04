@@ -1,4 +1,5 @@
 #!/usr/bin/env perl
+
 use strict;
 use warnings;
 use utf8;
@@ -12,17 +13,12 @@ use DBIx::Class::Async::Schema;
 use lib 't/lib';
 use TestDB;
 
-# Setup test database
-my $db_file = setup_test_db();
-
-plan tests => 5;
-
-my $loop = IO::Async::Loop->new;
+my $db_file      = setup_test_db();
+my $loop         = IO::Async::Loop->new;
 my $schema_class = get_test_schema_class();
 
 # Test 1: Empty results
 subtest 'Empty results' => sub {
-    plan tests => 5;
 
     my $schema = DBIx::Class::Async::Schema->connect(
         "dbi:SQLite:dbname=$db_file",
@@ -70,7 +66,6 @@ subtest 'Empty results' => sub {
 
 # Test 2: Special characters and encoding
 subtest 'Encoding and special chars' => sub {
-    plan tests => 3;
 
     my $schema = DBIx::Class::Async::Schema->connect(
         "dbi:SQLite:dbname=$db_file",
@@ -80,10 +75,6 @@ subtest 'Encoding and special chars' => sub {
         { workers => 1, schema_class => $schema_class, loop => $loop }
     );
 
-    # Note: Unicode test skipped due to Sereal serialization limitations
-    # Sereal (used by IO::Async::Function) doesn't handle wide characters well
-
-    # Test with quotes and SQL special chars (ASCII)
     my $special_name = "O'Connor & \"Special\" <Chars>";
     my $special_user_future = $schema->resultset('User')->create({
         name   => $special_name,
@@ -103,7 +94,6 @@ subtest 'Encoding and special chars' => sub {
     ok(@$verify_results > 0, 'Found user with special characters');
     is($verify_results->[0]->{name}, $special_name, 'Special characters retrieved correctly');
 
-    # Clean up
     $special_user->delete->get;
 
     $schema->disconnect;
@@ -111,7 +101,6 @@ subtest 'Encoding and special chars' => sub {
 
 # Test 3: Large result sets (memory)
 subtest 'Large result sets' => sub {
-    plan tests => 3;
 
     my $schema = DBIx::Class::Async::Schema->connect(
         "dbi:SQLite:dbname=$db_file",
@@ -167,7 +156,6 @@ subtest 'Large result sets' => sub {
 
 # Test 4: Concurrent modifications
 subtest 'Concurrent access' => sub {
-    plan tests => 3;
 
     my $schema = DBIx::Class::Async::Schema->connect(
         "dbi:SQLite:dbname=$db_file",
@@ -222,7 +210,6 @@ subtest 'Concurrent access' => sub {
 
     ok($all_ok, 'All concurrent reads succeeded');
 
-    # Clean up
     $final_user->delete->get;
 
     $schema->disconnect;
@@ -230,7 +217,6 @@ subtest 'Concurrent access' => sub {
 
 # Test 5: Error recovery
 subtest 'Error recovery' => sub {
-    plan tests => 3;
 
     my $schema = DBIx::Class::Async::Schema->connect(
         "dbi:SQLite:dbname=$db_file",
@@ -261,8 +247,6 @@ subtest 'Error recovery' => sub {
     $schema->disconnect;
 };
 
-
-# Cleanup
 teardown_test_db();
 
 done_testing();

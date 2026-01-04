@@ -5,20 +5,18 @@ use warnings;
 use utf8;
 
 use Test::More;
-use Test::Exception;
 use Test::Deep;
+use Test::Exception;
 use IO::Async::Loop;
 use DBIx::Class::Async::Schema;
 
 use lib 't/lib';
 use TestDB;
 
-# Setup test database
-my $db_file = setup_test_db();
-
-my $loop = IO::Async::Loop->new;
+my $db_file      = setup_test_db();
+my $loop         = IO::Async::Loop->new;
 my $schema_class = get_test_schema_class();
-my $schema = DBIx::Class::Async::Schema->connect(
+my $schema       = DBIx::Class::Async::Schema->connect(
     "dbi:SQLite:dbname=$db_file",
     undef,
     undef,
@@ -36,9 +34,9 @@ my $schema = DBIx::Class::Async::Schema->connect(
 # Test 1: Row object creation and basics
 subtest 'Row basics' => sub {
 
-    my $rs = $schema->resultset('User');
+    my $rs          = $schema->resultset('User');
     my $user_future = $rs->find(1);
-    my $user = $user_future->get;
+    my $user        = $user_future->get;
 
     isa_ok($user, 'DBIx::Class::Async::Row', 'Row object');
 
@@ -55,19 +53,17 @@ subtest 'Row basics' => sub {
     is_deeply(
         \%columns,
         {
-            id    => 1,
-            name  => 'Alice',
-            email => 'alice@example.com',
+            id     => 1,
+            name   => 'Alice',
+            email  => 'alice@example.com',
             active => 1,
         },
         'get_columns() returns all columns'
     );
 
-    # Test get_inflated_columns (same for now)
     my %inflated = $user->get_inflated_columns;
     is($inflated{name}, 'Alice', 'get_inflated_columns includes name');
 
-    # Test in_storage
     ok($user->in_storage, 'Row is in storage');
 };
 
@@ -76,16 +72,15 @@ subtest 'Row updates' => sub {
 
     my $rs = $schema->resultset('User');
 
-    # Bob has id=2 from test data
     my $user_future = $rs->find(2);
-    my $user = $user_future->get;
+    my $user        = $user_future->get;
 
     ok($user, 'Found user with id=2 (Bob)');
     is($user->name, 'Bob', 'User is Bob');
 
     # Update via row object
     my $update_future = $user->update({
-        name => 'Bob Updated',
+        name  => 'Bob Updated',
         email => 'bob.updated@example.com'
     });
 
@@ -112,8 +107,8 @@ subtest 'Row deletion' => sub {
 
     # Create a user to delete
     my $new_user = $rs->create({
-        name  => 'Temp User',
-        email => 'temp@example.com',
+        name   => 'Temp User',
+        email  => 'temp@example.com',
         active => 1,
     })->get;
 
@@ -138,7 +133,7 @@ subtest 'Row deletion' => sub {
 # Test 4: Relationships
 subtest 'Row relationships' => sub {
 
-    my $user_rs = $schema->resultset('User');
+    my $user_rs  = $schema->resultset('User');
     my $order_rs = $schema->resultset('Order');
 
     # User with orders (Alice, id=1)
@@ -175,7 +170,7 @@ subtest 'Row relationships' => sub {
 # Test 5: Error handling
 subtest 'Row errors' => sub {
 
-    my $rs = $schema->resultset('User');
+    my $rs   = $schema->resultset('User');
     my $user = $rs->find(1)->get;
 
     # Invalid column access
@@ -200,8 +195,8 @@ subtest 'Row errors' => sub {
 
     # Update deleted row
     my $temp_user = $rs->create({
-        name => 'Temp',
-        email => 'temp2@example.com',
+        name   => 'Temp',
+        email  => 'temp2@example.com',
         active => 1,
     })->get;
 
@@ -220,19 +215,15 @@ subtest 'Row errors' => sub {
 # Test 6: Row inflation (if implemented)
 subtest 'Row inflation' => sub {
 
-    my $rs = $schema->resultset('User');
+    my $rs   = $schema->resultset('User');
     my $user = $rs->find(1)->get;
 
     # Test that we can access all columns
     ok(defined $user->id, 'ID is accessible');
     ok(defined $user->name, 'Name is accessible');
     ok(defined $user->active, 'Active is accessible');
-
-    # Note: Real inflation (dates, JSON, etc.) would require
-    # more complex testing with custom inflators
 };
 
-# Cleanup
 $schema->disconnect;
 teardown_test_db();
 
