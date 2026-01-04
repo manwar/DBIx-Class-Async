@@ -1,6 +1,6 @@
 package DBIx::Class::Async;
 
-$DBIx::Class::Async::VERSION   = '0.03';
+$DBIx::Class::Async::VERSION   = '0.04';
 $DBIx::Class::Async::AUTHORITY = 'cpan:MANWAR';
 
 =head1 NAME
@@ -9,7 +9,7 @@ DBIx::Class::Async - Asynchronous database operations for DBIx::Class
 
 =head1 VERSION
 
-Version 0.03
+Version 0.04
 
 =cut
 
@@ -724,7 +724,7 @@ Executes a transaction.
         $schema->resultset('Account')->find(2)->update({ balance => \'balance + 100' });
 
         return 'transfer_complete';
-    })->get;
+    });
 
 The callback receives a DBIx::Class::Schema instance and should return the
 transaction result.
@@ -803,7 +803,7 @@ sub txn_do {
 Executes a batch of operations within a transaction. This is the recommended
 alternative to C<txn_do> as it avoids CODE reference serialisation issues.
 
-    my $result = $async_db->txn_batch(
+    my $result = await $async_db->txn_batch(
         # Update operations
         { type => 'update', resultset => 'Account', id => 1,
           data => { balance => \'balance - 100' } },
@@ -813,7 +813,7 @@ alternative to C<txn_do> as it avoids CODE reference serialisation issues.
         # Create operation
         { type => 'create', resultset => 'Log',
           data => { event => 'transfer', amount => 100, timestamp => \'NOW()' } },
-    )->get;
+    );
 
     # Returns count of successful operations
     say "Executed $result operations in transaction";
@@ -947,7 +947,7 @@ sub search_multi {
     });
 }
 
-=head2 search_with_prefetch
+=head2 search_with_prefetch (BROKEN)
 
 Search with eager loading of relationships.
 
@@ -959,6 +959,28 @@ Search with eager loading of relationships.
     );
 
 Returns: Arrayref of results with prefetched data.
+
+This method consistently fails with "closed" errors across all database
+backends.
+
+B<Migration Path>:
+
+Replace any C<search_with_prefetch> calls with separate queries:
+
+    # Old code (broken):
+    my $users = await $db->search_with_prefetch(
+        'User', { active => 1 }, 'posts', {}
+    );
+
+    # New code (working):
+    my $users = await $db->search('User', { active => 1 }, {});
+    foreach my $user (@$users) {
+        my $posts = await $db->search('Post', { user_id => $user->{id} }, {});
+        $user->{posts} = $posts;
+    }
+
+For parallel fetching, see L</KNOWN ISSUES> for optimised patterns using
+C<Future::Utils::fmap_concat>.
 
 =cut
 
@@ -1572,6 +1594,63 @@ Transactions execute on a single worker only.
 All rows are loaded into memory. Use pagination for large datasets.
 
 =back
+
+=head1 KNOWN ISSUES
+
+=head2 search_with_prefetch is Broken
+
+The C<search_with_prefetch> method B<does not work> with any database backend
+(SQLite, MySQL, or PostgreSQL). Worker processes consistently crash with
+"closed" errors when attempting to perform eager loading of relationships.
+
+B<Root Cause>: The issue appears to be in how the worker process handles
+complex queries with joins/prefetch, not database-specific concurrency problems.
+
+B<Workaround - Use Separate Queries>:
+
+Instead of attempting to prefetch relationships, fetch them separately:
+
+    # Broken - do not use
+    my $users = await $db->search_with_prefetch('User', {}, 'posts', {});
+
+    # Working solution - separate queries
+    my $users = await $db->search('User', {}, {});
+
+    foreach my $user (@$users) {
+        my $posts = await $db->search(
+            'Post',
+            { user_id => $user->{id} },
+            {}
+        );
+        $user->{posts} = $posts;  # Manually attach
+    }
+
+B<Performance Optimisation>:
+
+For better performance when fetching related data for multiple records, use
+parallel queries with controlled concurrency:
+
+    use Future::Utils qw(fmap_concat);
+
+    my $users = await $db->search('User', {}, { rows => 100 });
+
+    # Fetch posts for all users with max 5 concurrent queries
+    my @enriched = await fmap_concat {
+        my ($user) = @_;
+
+        $db->search('Post', { user_id => $user->{id} }, {})
+        ->then(sub {
+            my ($posts) = @_;
+            return Future->done({ %$user, posts => $posts });
+        });
+    } foreach => $users, concurrent => 5;
+
+This approach provides similar benefits to prefetch (reduced round trips through
+batching) while avoiding the broken C<search_with_prefetch> implementation.
+
+B<Status>: This is a fundamental issue with the current DBIx::Class::Async
+implementation. Users should avoid C<search_with_prefetch> entirely until this
+is resolved in a future release.
 
 =head1 AUTHOR
 

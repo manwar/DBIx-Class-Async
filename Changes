@@ -1,6 +1,9 @@
 Revision history for DBIx::Class::Async
 
-0.02  2026-01-04
+0.04  2026-01-04
+      - Updated pod document.
+
+0.03  2026-01-04
       - Tidied up unit tests.
 
 0.02  2026-01-04

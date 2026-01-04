@@ -13,7 +13,7 @@ use DBIx::Class::Async::Storage;
 use DBIx::Class::Async::TxnGuard;
 use DBIx::Class::Async::ResultSet;
 
-our $VERSION = '0.03';
+our $VERSION = '0.04';
 
 =head1 NAME
 
@@ -21,7 +21,7 @@ DBIx::Class::Async::Schema - Asynchronous Schema for DBIx::Class::Async
 
 =head1 VERSION
 
-Version 0.03
+Version 0.04
 
 =cut
 
@@ -51,19 +51,6 @@ Version 0.03
         foreach my $user (@$active_users) {
             say "Active user: " . $user->name;
         }
-    });
-
-    # Transactions
-    $schema->txn_do(sub {
-        my $txn_schema = shift;
-        # Perform multiple async operations
-        return $txn_schema->resultset('User')->create({
-            name  => 'Alice',
-            email => 'alice@example.com',
-        });
-    })->then(sub {
-        my ($new_user) = @_;
-        say "Created user: " . $new_user->id;
     });
 
     # Disconnect when done
