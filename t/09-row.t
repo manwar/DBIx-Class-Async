@@ -146,7 +146,7 @@ subtest 'Row relationships' => sub {
     is($orders_rs->source_name, 'Order', 'Correct related resultset');
 
     # Get orders via relationship
-    my $orders = $user->orders;
+    my $orders = $user->orders->all->get;
     isa_ok($orders, 'ARRAY', 'Relationship returns arrayref');
     is(scalar @$orders, 2, 'Alice has 2 orders');
 
@@ -158,13 +158,25 @@ subtest 'Row relationships' => sub {
     my $order = $order_rs->find(1)->get;
     ok($order, 'Found order id=1');
 
-    my $order_user = $order->user;
+    my $order_user = $order->user->get;
     isa_ok($order_user, 'DBIx::Class::Async::Row', 'Order->user returns Row');
     is($order_user->id, 1, 'Order belongs to correct user (Alice)');
 
-    # Test relationship caching
-    my $orders2 = $user->orders;
-    is($orders, $orders2, 'Relationship results are cached');
+    # 1. Capture the ResultSet object itself
+    my $orders_rs1 = $user->orders;
+    isa_ok($orders_rs1, 'DBIx::Class::Async::ResultSet');
+
+    # 2. Get the data from it
+    my $data1 = $orders_rs1->all->get;
+
+    # 3. Call the accessor again - should return the SAME ResultSet object
+    my $orders_rs2 = $user->orders;
+
+    is($orders_rs1, $orders_rs2, 'The ResultSet object itself is cached in the Row');
+
+    # 4. (Optional) Check that the data matches
+    my $data2 = $orders_rs2->all->get;
+    is_deeply($data1, $data2, 'The data retrieved via the cached ResultSet is identical');
 };
 
 # Test 5: Error handling
@@ -180,8 +192,8 @@ subtest 'Row errors' => sub {
 
     # Invalid column via method
     throws_ok {
-        $user->nonexistent_column;
-    } qr/Method nonexistent_column not found/, 'Invalid method throws error';
+        $user->nonexistent_column
+    } qr/Method .*nonexistent_column.* not found/, 'Invalid method throws error';
 
     # Invalid relationship
     throws_ok {

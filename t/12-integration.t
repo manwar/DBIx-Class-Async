@@ -19,7 +19,6 @@ my $schema_class = get_test_schema_class();
 
 # Test 1: Full workflow
 subtest 'Complete workflow' => sub {
-    plan tests => 11;
 
     my $schema = DBIx::Class::Async::Schema->connect(
         "dbi:SQLite:dbname=$db_file",
@@ -57,9 +56,9 @@ subtest 'Complete workflow' => sub {
 
     ok($new_order->id, 'Created new order');
 
-    # 4. Fetch with relationships - find returns Row object
+    # 4. Fetch with relationships
     my $fetched_user = $schema->resultset('User')->find($new_user->id)->get;
-    my $orders = $fetched_user->orders;
+    my $orders = $fetched_user->orders->all->get;
 
     cmp_ok(scalar @$orders, '>=', 1, 'User has orders');
     is($orders->[0]->user_id, $new_user->id, 'Order belongs to user');

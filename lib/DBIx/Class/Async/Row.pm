@@ -14,11 +14,11 @@ DBIx::Class::Async::Row - Asynchronous Row Object for DBIx::Class::Async
 
 =head1 VERSION
 
-Version 0.06
+Version 0.07
 
 =cut
 
-our $VERSION = '0.06';
+our $VERSION = '0.07';
 
 =head1 SYNOPSIS
 
@@ -717,23 +717,23 @@ Destructor method.
 
 =cut
 
-# Internal methods and AUTOLOAD implementation follow...
-
 sub _ensure_accessors {
-    my $self  = shift;
-    my $class = ref $self;
+    my $self   = shift;
+    my $source = $self->_get_source;
 
-    my $source  = $self->{schema}->source($self->{source_name});
-    my @columns = $source->columns;
+    foreach my $col (keys %{$self->{_data}}) {
+        # SKIP if it's a relationship - let AUTOLOAD/Builder handle it
+        next if $source->relationship_info($col);
 
-    foreach my $col (@columns) {
-        next if $class->can($col);
-
+        # Only create the accessor if it doesn't exist yet
         no strict 'refs';
-        *{"${class}::$col"} = sub {
-            my $inner_self = shift;
-            return $inner_self->get_column($col);
-        };
+        my $method = ref($self) . "::$col";
+        unless (defined &$method) {
+            *$method = sub {
+                my $self = shift;
+                return $self->{_data}{$col};
+            };
+        }
     }
 }
 
@@ -770,69 +770,44 @@ sub _build_relationship_accessor {
     my ($self, $method, $rel_info) = @_;
     my $foreign_source = $rel_info->{source};
 
-    if ($rel_info->{attrs}{accessor} &&
-        $rel_info->{attrs}{accessor} eq 'single') {
-        return sub {
-            my $self = shift;
-            return $self->{_related}{$method} if exists $self->{_related}{$method};
+    return sub {
+        my $self = shift;
 
-            my $rs = $self->related_resultset($method);
-            my $result = $rs->first->get;
+        # 1. Return cached Future/ResultSet
+        return $self->{_related}{$method} if exists $self->{_related}{$method};
 
-            my $row_obj;
-            if (UNIVERSAL::isa($result, 'DBIx::Class::Async::Row')) {
-                $row_obj = $result;
-            } elsif (ref $result eq 'HASH'
-                     && $self->{schema}
-                     && $self->{async_db}) {
-                $row_obj = DBIx::Class::Async::Row->new(
-                    schema      => $self->{schema},
-                    async_db    => $self->{async_db},
-                    source_name => $foreign_source,
-                    row_data    => $result,
-                );
+        my $result;
+        # 2. Handle Single (belongs_to)
+        if ($rel_info->{attrs}{accessor} && $rel_info->{attrs}{accessor} eq 'single') {
+            if (exists $self->{_data}{$method} && defined $self->{_data}{$method}) {
+                my $row = $self->{schema}->resultset($foreign_source)->new_result($self->{_data}{$method});
+                $result = Future->done($row);
             } else {
-                $row_obj = $result;
+                $result = $self->related_resultset($method)->single_future; # Use future-safe version
             }
+        }
+        # 3. Handle Multi (has_many)
+        else {
+            # Check if we have prefetch data (even if it is undef/empty)
+            if (exists $self->{_data}{$method}) {
+                my $data = $self->{_data}{$method};
 
-            $self->{_related}{$method} = $row_obj;
-            return $row_obj;
-        };
-    } else {
-        return sub {
-            my $self = shift;
-            return $self->{_related}{$method} if exists $self->{_related}{$method};
+                # FORCE it to be an array ref to satisfy ResultSet line 637
+                $data = [] if !defined $data;
+                $data = [$data] if ref $data ne 'ARRAY';
 
-            my $rs = $self->related_resultset($method);
-            my $result = $rs->all->get;
-
-            my $rows;
-            if (ref $result eq 'ARRAY'
-                && $self->{schema}
-                && $self->{async_db}) {
-                $rows = [];
-                foreach my $item (@$result) {
-                    if (UNIVERSAL::isa($item, 'DBIx::Class::Async::Row')) {
-                        push @$rows, $item;
-                    } elsif (ref $item eq 'HASH') {
-                        push @$rows, DBIx::Class::Async::Row->new(
-                            schema      => $self->{schema},
-                            async_db    => $self->{async_db},
-                            source_name => $foreign_source,
-                            row_data    => $item,
-                        );
-                    } else {
-                        push @$rows, $item;
-                    }
-                }
+                $result = $self->{schema}->resultset($foreign_source)->new_result_set({
+                    entries       => $data,
+                    is_prefetched => 1,
+                });
             } else {
-                $rows = $result;
+                $result = $self->related_resultset($method);
             }
+        }
 
-            $self->{_related}{$method} = $rows;
-            return $rows;
-        };
-    }
+        $self->{_related}{$method} = $result;
+        return $result;
+    };
 }
 
 sub AUTOLOAD {
@@ -840,40 +815,48 @@ sub AUTOLOAD {
     our $AUTOLOAD;
     my ($method) = $AUTOLOAD =~ /([^:]+)$/;
 
-    # Skip DESTROY
+    # 1. Skip DESTROY
     return if $method eq 'DESTROY';
-
-    # 1. Fast path: direct column access
-    if (exists $self->{_data}{$method}) {
-        return $self->{_data}{$method};
-    }
 
     my $source = $self->_get_source;
 
-    # 2. Check if it's a relationship
+    # 2. Check if this is a Relationship
+    # Relationships MUST be handled by the accessor factory to ensure
+    # they return objects (ResultSets or Futures) rather than raw data.
     my $rel_info;
     if ($source && $source->can('relationship_info')) {
         $rel_info = $source->relationship_info($method);
     }
 
     if ($rel_info) {
+        # Build the proper accessor (handles prefetch logic internally)
         my $accessor = $self->_build_relationship_accessor($method, $rel_info);
+
+        # Memoize the accessor into the package so AUTOLOAD isn't called next time
         {
             no strict 'refs';
             *{ref($self) . "::$method"} = $accessor;
         }
+
+        # Execute and return (will return a Future for single, ResultSet for multi)
         return $accessor->($self);
     }
 
-    # 3. GUARD: Only try get_column if it's actually a column
-    # This prevents "No such column 'get'" errors when calling missing methods
+    # 3. Fast Path: Direct Column Access
+    # If it's in the data hash and NOT a relationship, return the value immediately.
+    if (exists $self->{_data}{$method}) {
+        return $self->{_data}{$method};
+    }
+
+    # 4. Lazy Column Guard
+    # If it's a valid column but hasn't been loaded into { _data } yet.
     if ($source && $source->has_column($method)) {
         return $self->get_column($method);
     }
 
-    # 4. Fallback to standard Perl error for missing methods
+    # 5. Error Fallback
     require Carp;
-    Carp::croak("Method $method not found in " . ref $self);
+    Carp::croak("Method '$method' not found in row object of type " . ref($self));
 }
 
 sub DESTROY {

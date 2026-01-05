@@ -155,11 +155,11 @@ subtest 'Order operations' => sub {
     is($order->user_id, $user->id);
 
     # Test belongs_to
-    my $order_user = $order->user;
+    my $order_user = $order->user->get;
     is($order_user->id, $user->id, 'belongs_to works');
 
     # Test has_many
-    my $user_orders = $user->orders;
+    my $user_orders = $user->orders->all->get;
     isa_ok($user_orders, 'ARRAY');
     is(scalar @$user_orders, 1, 'User has 1 order');
     is($user_orders->[0]->id, $order->id, 'Correct order');

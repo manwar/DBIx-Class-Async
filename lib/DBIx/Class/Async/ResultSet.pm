@@ -16,11 +16,11 @@ DBIx::Class::Async::ResultSet - Asynchronous ResultSet for DBIx::Class::Async
 
 =head1 VERSION
 
-Version 0.06
+Version 0.07
 
 =cut
 
-our $VERSION = '0.06';
+our $VERSION = '0.07';
 
 =head1 SYNOPSIS
 
@@ -134,12 +134,82 @@ sub new {
         schema        => $args{schema},
         async_db      => $args{async_db},
         source_name   => $args{source_name},
-        _source       => undef,  # Lazy-loaded
+        _source       => undef,
         _cond         => {},
         _attrs        => {},
         _rows         => undef,
         _pos          => 0,
+        entries       => $args{entries}       || undef, # For prefetched data
+        is_prefetched => $args{is_prefetched} || 0,     # Flag for prefetch
     }, $class;
+}
+
+=head2 new_result
+
+  my $row = $rs->new_result($hashref);
+
+A helper method that inflates a raw hash of database columns into a blessed Row object.
+
+It dynamically generates a specialised subclass under the C<DBIx::Class::Async::Row::*>
+namespace based on the C<source_name> of the current ResultSet. This allows for
+cleaner method resolution and avoids namespace pollution across different tables.
+
+The returned object will be an instance of a class that inherits from
+L<DBIx::Class::Async::Row>.
+
+Returns C<undef> if the provided data is empty or undefined.
+
+=cut
+
+sub new_result {
+    my ($self, $data) = @_;
+    return undef unless $data;
+
+    # Create a unique class for this specific table to avoid namespace pollution
+    my $row_class = "DBIx::Class::Async::Row::" . $self->{source_name};
+
+    {
+        no strict 'refs';
+        unless (@{"${row_class}::ISA"}) {
+            @{"${row_class}::ISA"} = ('DBIx::Class::Async::Row');
+        }
+    }
+
+    return $row_class->new(
+        schema      => $self->{schema},
+        async_db    => $self->{async_db},
+        source_name => $self->{source_name},
+        row_data    => $data,
+    );
+}
+
+=head2 new_result_set
+
+  my $new_rs = $rs->new_result_set({
+      entries       => \@prefetched_data,
+      is_prefetched => 1
+  });
+
+Creates a new instance (clone) of the current ResultSet class, inheriting the
+schema, database connection, and source name.
+
+This is primarily used internally to handle prefetched relationships. When a
+C<has_many> relationship is accessed, this method creates a "virtual" ResultSet
+seeded with the data already retrieved in the initial query, preventing
+unnecessary follow-up database hits.
+
+Accepts a hashref of attributes to override in the new instance.
+
+=cut
+
+sub new_result_set {
+    my ($self, $args) = @_;
+    return (ref $self)->new(
+        schema      => $self->{schema},
+        async_db    => $self->{async_db},
+        source_name => $self->{source_name},
+        %$args,
+    );
 }
 
 =head1 METHODS
@@ -172,8 +242,15 @@ Results are cached internally for use with C<next> and C<reset> methods.
 sub all {
     my $self = shift;
 
-    my $source_name = $self->{source_name};
+    # 1. If this is a prefetched ResultSet, return the data immediately as a Future
+    if ($self->{is_prefetched} && $self->{entries}) {
+        my @rows       = map { $self->new_result($_) } @{$self->{entries}};
+        $self->{_rows} = \@rows;
+        return Future->done(@rows); # Resolves to the list of rows
+    }
 
+    # 2. Standard Async Fetch
+    my $source_name = $self->{source_name};
     return $self->{async_db}->search(
         $source_name,
         $self->{_cond},
@@ -181,18 +258,9 @@ sub all {
     )->then(sub {
         my ($rows_data) = @_;
 
-        my @rows = map {
-            DBIx::Class::Async::Row->new(
-                schema       => $self->{schema},
-                async_db     => $self->{async_db},
-                source_name  => $source_name,
-                row_data     => $_,
-            )
-        } @$rows_data;
-
-        # Cache results for next() iteration
+        my @rows       = map { $self->new_result($_) } @$rows_data;
         $self->{_rows} = \@rows;
-        $self->{_pos} = 0;
+        $self->{_pos}  = 0;
 
         return Future->done(\@rows);
     });
@@ -334,15 +402,7 @@ sub create {
         $data,
     )->then(sub {
         my ($row_data) = @_;
-
-        return Future->done(
-            DBIx::Class::Async::Row->new(
-                schema       => $self->{schema},
-                async_db     => $self->{async_db},
-                source_name  => $self->{source_name},
-                row_data     => $row_data,
-            )
-        );
+        return Future->done($self->new_result($row_data));
     });
 }
 
@@ -492,20 +552,14 @@ or C<undef> if no rows match.
 sub first {
     my $self = shift;
 
-    return $self->search(undef, { rows => 1 })->all_future->then(sub {
-        my ($rows_arrayref) = @_;
+    # Handle prefetch
+    if ($self->{is_prefetched} && $self->{entries}) {
+        return Future->done($self->new_result($self->{entries}[0]));
+    }
 
-        if (@$rows_arrayref > 0) {
-            my $row_obj = DBIx::Class::Async::Row->new(
-                schema      => $self->{schema},
-                async_db    => $self->{async_db},
-                source_name => $self->{source_name},
-                row_data    => $rows_arrayref->[0],
-            );
-            return Future->done($row_obj);
-        }
-
-        return Future->done(undef);
+    return $self->search(undef, { rows => 1 })->all->then(sub {
+        my (@rows) = @_;
+        return Future->done($rows[0]);
     });
 }
 
@@ -650,16 +704,7 @@ This method returns a clone of the result set and does not modify the original.
 
 sub prefetch {
     my ($self, $prefetch) = @_;
-
-    my $clone = bless {
-        %$self,
-        _attrs => {
-            %{$self->{_attrs}},
-            prefetch => $prefetch,
-        },
-    }, ref $self;
-
-    return $clone;
+    return $self->search(undef, { prefetch => $prefetch });
 }
 
 =head2 reset
@@ -725,10 +770,12 @@ sub search {
 
     my $clone = bless {
         %$self,
-        _cond  => { %{$self->{_cond}},  %{$cond  || {}} },
-        _attrs => { %{$self->{_attrs}}, %{$attrs || {}} },
-        _rows  => undef,  # Reset cached results
-        _pos   => 0,
+        _cond         => { %{$self->{_cond}},  %{$cond  || {}} },
+        _attrs        => { %{$self->{_attrs}}, %{$attrs || {}} },
+        _rows         => undef,
+        _pos          => 0,
+        entries       => undef, # Clones lose prefetch data unless re-fetched
+        is_prefetched => 0,
     }, ref $self;
 
     return $clone;
@@ -793,57 +840,34 @@ attributes.
 sub single_future {
     my $self = shift;
 
-    # Check if this is a simple primary key lookup
+    # 1. If already prefetched
+    if ($self->{is_prefetched} && $self->{entries}) {
+        my $data = $self->{entries}[0];
+        return Future->done($data ? $self->new_result($data) : undef);
+    }
+
+    # 2. Optimization: Check for simple PK lookup
     my @pk = $self->result_source->primary_columns;
     if (@pk == 1
         && keys %{$self->{_cond}} == 1
         && exists $self->{_cond}{$pk[0]}
         && !ref $self->{_cond}{$pk[0]}) {
 
-        # Use find() for simple PK lookups - goes directly to worker
         return $self->{async_db}->find(
             $self->{source_name},
             $self->{_cond}{$pk[0]}
         )->then(sub {
             my $data = shift;
-
-            # If no row found, return undef
-            return Future->done(undef) unless $data;
-
-            my $row = DBIx::Class::Async::Row->new(
-                schema      => $self->{schema},
-                async_db    => $self->{async_db},
-                source_name => $self->{source_name},
-                row_data    => $data,
-            );
-
-            return Future->done($row);
+            return Future->done($data ? $self->new_result($data) : undef);
         });
     }
 
-    # For complex queries, use search with limit
-    my $attrs = {
-        %{$self->{_attrs}},
-        rows => 1,
-    };
+    # 3. General Case - FIX IS HERE
+    return $self->search(undef, { rows => 1 })->all->then(sub {
+        my ($results) = @_; # $results is now an ARRAY reference
 
-    return $self->{async_db}->search(
-        $self->{source_name},
-        $self->{_cond},
-        $attrs
-    )->then(sub {
-        my $rows = shift;
-        my $data = (ref $rows eq 'ARRAY') ? $rows->[0] : $rows;
-
-        # If no row found, return undef
-        return Future->done(undef) unless $data;
-
-        my $row = DBIx::Class::Async::Row->new(
-            schema      => $self->{schema},
-            async_db    => $self->{async_db},
-            source_name => $self->{source_name},
-            row_data    => $data,
-        );
+        # Guard: Check if it's an arrayref and get the first element
+        my $row = (ref $results eq 'ARRAY') ? $results->[0] : $results;
 
         return Future->done($row);
     });
@@ -979,8 +1003,6 @@ A L<DBIx::Class::ResultSource> object.
 
 =cut
 
-sub source { shift->result_source(@_) }
-
 =head1 CHAINABLE MODIFIERS
 
 The following methods return a new result set with the specified attribute
@@ -1041,38 +1063,26 @@ Alias for C<single_future>.
 
 # Internal methods and dynamic method generation follow...
 
-sub _get_source {
-    my $self = shift;
-
-    unless ($self->{_source}) {
-        $self->{_source} = $self->{schema}->source($self->{source_name});
-    }
-
-    return $self->{_source};
-}
-
 # Alias for convenience
 sub search_future { shift->all_future(@_)    }
 sub first_future  { shift->single_future(@_) }
 
 # Chainable modifiers
-for my $method (qw(rows page order_by columns group_by having distinct)) {
-    eval qq{
-        sub $method {
-            my (\$self, \$value) = \@_;
-
-            my \$clone = bless {
-                %\$self,
-                _attrs => {
-                    %{\$self->{_attrs}},
-                    $method => \$value,
-                },
-            }, ref \$self;
-
-            return \$clone;
-        }
+foreach my $method (qw(rows page order_by columns group_by having distinct)) {
+    no strict 'refs';
+    *{$method} = sub {
+        my ($self, $value) = @_;
+        return $self->search(undef, { $method => $value });
     };
 }
+
+sub _get_source {
+    my $self = shift;
+    $self->{_source} ||= $self->{schema}->source($self->{source_name});
+    return $self->{_source};
+}
+
+sub source { shift->_get_source }
 
 =head1 SEE ALSO
 

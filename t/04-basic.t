@@ -140,12 +140,19 @@ subtest 'Order operations' => sub {
     is($order->user_id, $user->id);
 
     # Test belongs_to
-    my $order_user = $order->user;
+    my $order_user_future = $order->user;
+    isa_ok($order_user_future, 'Future'); # It's a Future now
+
+    my $order_user = $order_user_future->get; # Resolve it
+    isa_ok($order_user, 'DBIx::Class::Async::Row');
     is($order_user->id, $user->id, 'belongs_to works');
 
     # Test has_many
-    my $user_orders = $user->orders;
-    isa_ok($user_orders, 'ARRAY');
+    my $orders_rs = $user->orders;
+    isa_ok($orders_rs, 'DBIx::Class::Async::ResultSet');
+
+    my $orders_future = $orders_rs->all;
+    my $user_orders = $user->orders->all->get;
     is(scalar @$user_orders, 1, 'User has 1 order');
     is($user_orders->[0]->id, $order->id, 'Correct order');
 

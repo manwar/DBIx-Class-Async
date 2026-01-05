@@ -1,6 +1,6 @@
 package DBIx::Class::Async;
 
-$DBIx::Class::Async::VERSION   = '0.06';
+$DBIx::Class::Async::VERSION   = '0.07';
 $DBIx::Class::Async::AUTHORITY = 'cpan:MANWAR';
 
 =head1 NAME
@@ -9,7 +9,7 @@ DBIx::Class::Async - Asynchronous database operations for DBIx::Class
 
 =head1 VERSION
 
-Version 0.06
+Version 0.07
 
 =cut
 
@@ -1258,7 +1258,7 @@ sub _execute_operation {
     elsif ($operation eq 'find') {
         my ($resultset, $id) = @args;
         my $row = $schema->resultset($resultset)->find($id);
-        return $row ? {$row->get_columns} : undef;
+        return $row ? {$row->get_inflated_columns} : undef;
     }
     elsif ($operation eq 'create') {
         my ($source_name, $data) = @args;
@@ -1276,7 +1276,7 @@ sub _execute_operation {
         my $row = $schema->resultset($resultset)->find($id);
         return undef unless $row;
         $row->update($data);
-        return {$row->get_columns};
+        return {$row->get_inflated_columns};
     }
     elsif ($operation eq 'update_bulk') {
         my ($source_name, $condition, $data) = @args;
