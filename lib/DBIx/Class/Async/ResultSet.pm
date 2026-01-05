@@ -16,11 +16,11 @@ DBIx::Class::Async::ResultSet - Asynchronous ResultSet for DBIx::Class::Async
 
 =head1 VERSION
 
-Version 0.07
+Version 0.08
 
 =cut
 
-our $VERSION = '0.07';
+our $VERSION = '0.08';
 
 =head1 SYNOPSIS
 
@@ -397,12 +397,30 @@ the newly created row.
 sub create {
     my ($self, $data) = @_;
 
+    # MERGE: Combine the ResultSet's current search condition (which contains the foreign key)
+    # with the new data provided by the user.
+    my %to_insert = ( %{$self->{_cond} || {}}, %$data );
+
+    # Clean up prefixes: DBIC sometimes stores conditions as 'foreign.user_id'
+    # but we need 'user_id' for the INSERT statement.
+    my %final_data;
+    while (my ($k, $v) = each %to_insert) {
+        my $clean_key = $k;
+        $clean_key =~ s/^(?:foreign|self)\.//;
+        $final_data{$clean_key} = $v;
+    }
+
     return $self->{async_db}->create(
         $self->{source_name},
-        $data,
+        \%final_data
     )->then(sub {
-        my ($row_data) = @_;
-        return Future->done($self->new_result($row_data));
+        my ($result) = @_;
+
+        if (ref $result eq 'HASH' && $result->{__error}) {
+            return Future->fail($result->{__error}, 'db_error');
+        }
+
+        return Future->done($self->new_result($result));
     });
 }
 

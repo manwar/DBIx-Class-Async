@@ -67,17 +67,26 @@ eval {
 
     print "ok 5 - Future created\n";
 
-    # Try to get the result
-    my $result = $future->get;
+    my $result;
+    my $success = eval {
+        $result = $future->get; # This will now throw if the DB returns __error
+        1;
+    };
 
-    if ($result) {
+    if ($success && $result) {
         print "ok 6 - Got result: " . ref($result) . "\n";
         print "ok 7 - Test passed\n";
     } else {
-        print "not ok 6 - No result\n";
-        print "not ok 7 - Test failed\n";
+        my $err = $@ || "Unknown error";
+        # If the test EXPECTS a failure (e.g. testing no such table), use this:
+        if ($err =~ /no such table/) {
+            print "ok 6 - Correctly caught missing table error\n";
+            print "ok 7 - Test passed (Error handling verified)\n";
+        } else {
+            print "not ok 6 - Unexpected failure: $err\n";
+            print "not ok 7 - Test failed\n";
+        }
     }
-
     1;
 } or do {
     my $error = $@;

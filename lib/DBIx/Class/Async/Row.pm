@@ -14,11 +14,11 @@ DBIx::Class::Async::Row - Asynchronous Row Object for DBIx::Class::Async
 
 =head1 VERSION
 
-Version 0.07
+Version 0.08
 
 =cut
 
-our $VERSION = '0.07';
+our $VERSION = '0.08';
 
 =head1 SYNOPSIS
 
@@ -593,25 +593,14 @@ sub related_resultset {
     # Get value from our row
     my $value = $self->get_column($self_column);
 
-    # Get foreign source
-    my $foreign_source = $rel_info->{source} or
-        croak "No source defined for relationship '$rel_name'";
+    my $raw_source = $rel_info->{source}
+        or croak "No source defined for relationship '$rel_name'";
 
-    my $foreign_class = $rel_info->{class} || $rel_info->{source} or
-        croak "No source/class defined for relationship '$rel_name'";
-
-    # Use the class/source to get the initial resultset
-    my $rs = $self->{schema}->resultset($rel_info->{class} || $rel_info->{source});
-
-    # Get the moniker. If DBIx::Class gives us 'TestSchema::Result::Order',
-    # we strip it down to 'Order' to satisfy the test.
-    my $moniker = $rs->source_name;
+    my $moniker = $raw_source;
     $moniker =~ s/.*:://;
 
-    # Create the condition for the foreign key
     my $search_cond = { $foreign_column => $value };
 
-    # Return the resultset using the cleaned short name
     return $self->{schema}->resultset($moniker)->search($search_cond);
 }
 
@@ -642,6 +631,37 @@ sub insert {
     my $self = shift;
     # Already inserted via create()
     return Future->done($self);
+}
+
+=head2 create_related
+
+  my $post_future = $user->create_related('posts', {
+      title   => 'My First Post',
+      content => 'Hello World!'
+  });
+
+  my $post = await $post_future;
+
+A convenience method that creates a new record in the specified relationship.
+
+It internally calls C<related_resultset> to identify the correct foreign key
+mapping (e.g., setting C<user_id> to the current user's ID) and then invokes
+C<create> on the resulting ResultSet.
+
+This method returns a L<Future> that resolves to a new Row object of the
+related type.
+
+B<Note:> Just like L<DBIx::Class::Async::ResultSet/create>, this method
+automatically merges the relationship's foreign key constraints into the
+provided hashref, ensuring that NOT NULL constraints on the foreign key
+columns are satisfied.
+
+=cut
+
+sub create_related {
+    my ($self, $rel_name, $col_data) = @_;
+
+    return $self->related_resultset($rel_name)->create($col_data);
 }
 
 =head1 AUTOLOAD METHODS
