@@ -1,5 +1,8 @@
 Revision history for DBIx::Class::Async
 
+0.11  2026-01-06
+      - Search with prefix now supported by DBIx::Class::Asyn::ResultSet.
+
 0.10  2026-01-06
       - POD cleanup in general.
 
