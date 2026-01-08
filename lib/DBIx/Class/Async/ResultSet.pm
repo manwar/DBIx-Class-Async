@@ -17,11 +17,11 @@ DBIx::Class::Async::ResultSet - Asynchronous ResultSet for DBIx::Class::Async
 
 =head1 VERSION
 
-Version 0.13
+Version 0.14
 
 =cut
 
-our $VERSION = '0.13';
+our $VERSION = '0.14';
 
 =head1 SYNOPSIS
 
@@ -370,6 +370,17 @@ A L<Future> that resolves to the number of matching rows.
 sub count {
     my $self = shift;
 
+    # If we have rows/offset, we need to count differently
+    # We can't just pass the condition - we need to actually apply the slice
+    if (exists $self->{_attrs}{rows} || exists $self->{_attrs}{offset}) {
+        # For sliced ResultSets, we need to fetch and count
+        return $self->all->then(sub {
+            my ($results) = @_;
+            return Future->done(scalar @$results);
+        });
+    }
+
+    # Normal count without slice
     return $self->{async_db}->count(
         $self->{source_name},
         $self->{_cond},
@@ -1083,6 +1094,91 @@ Alias for C<all_future>.
 =cut
 
 sub search_future { shift->all_future(@_)  }
+
+=head2 slice
+
+  my ($first, $second, $third) = $rs->slice(0, 2);
+  my @records = $rs->slice(5, 10);
+  my $sliced_rs = $rs->slice(0, 9);  # scalar context
+
+Returns a resultset or object list representing a subset of elements from the
+resultset. Indexes are from 0.
+
+=over 4
+
+=item B<Parameters>
+
+=over 8
+
+=item C<$first>
+
+Zero-based starting index (inclusive).
+
+=item C<$last>
+
+Zero-based ending index (inclusive).
+
+=back
+
+=item B<Returns>
+
+In list context: Array of L<DBIx::Class::Async::Row> objects.
+
+In scalar context: A new L<DBIx::Class::Async::ResultSet> with appropriate
+C<rows> and C<offset> attributes set.
+
+=item B<Examples>
+
+  # Get first 3 records
+  my ($one, $two, $three) = $rs->slice(0, 2);
+
+  # Get records 10-19
+  my @batch = $rs->slice(10, 19);
+
+  # Get a ResultSet for records 5-14 (for further chaining)
+  my $subset_rs = $rs->slice(5, 14);
+  my $count = $subset_rs->count->get;
+
+=back
+
+=cut
+
+sub slice {
+    my ($self, $first, $last) = @_;
+
+    require Carp;
+    Carp::croak("slice requires two arguments (first and last index)")
+        unless defined $first && defined $last;
+
+    Carp::croak("slice indices must be non-negative integers")
+        if $first < 0 || $last < 0;
+
+    Carp::croak("first index must be less than or equal to last index")
+        if $first > $last;
+
+    # Calculate offset and number of rows
+    my $offset = $first;
+    my $rows = $last - $first + 1;
+
+    # In scalar context, return a new ResultSet with offset and rows set
+    unless (wantarray) {
+        return $self->search(undef, {
+            offset => $offset,
+            rows   => $rows,
+        });
+    }
+
+    # In list context, fetch the data and return the array
+    # We need to apply offset and rows, then fetch
+    my $sliced_rs = $self->search(undef, {
+        offset => $offset,
+        rows   => $rows,
+    });
+
+    # Fetch all results and return as list
+    my $results = $sliced_rs->all->get;
+    return @$results;
+}
 
 =head2 update
 
