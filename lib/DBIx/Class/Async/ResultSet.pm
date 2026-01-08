@@ -17,11 +17,11 @@ DBIx::Class::Async::ResultSet - Asynchronous ResultSet for DBIx::Class::Async
 
 =head1 VERSION
 
-Version 0.16
+Version 0.17
 
 =cut
 
-our $VERSION = '0.16';
+our $VERSION = '0.17';
 
 =head1 SYNOPSIS
 
@@ -1460,6 +1460,100 @@ sub update {
     )->then(sub {
         my ($rows_affected) = @_;
         return Future->done($rows_affected);
+    });
+}
+
+=head2 update_or_create
+
+    my $future = $rs->update_or_create({
+         email => 'user@example.com',
+         name  => 'Updated Name',
+        active => 1
+    }, { key => 'user_email' });
+
+    $future->on_done(sub {
+        my $row = shift;
+        print "Upserted user ID: " . $row->id;
+    });
+
+An "upsert" operation. It first attempts to locate an existing record using the unique
+constraints provided in the data hashref (or specified by the C<key> attribute).
+
+=over 4
+
+=item * If a matching record is found, it is updated with the remaining values in the hashref.
+
+=item * If no matching record is found, a new record is inserted into the database.
+
+=back
+
+Returns a L<Future> which, when resolved, provides the L<DBIx::Class::Async::Row>
+object representing the updated or newly created record.
+
+=cut
+
+sub update_or_create {
+    my ($self, $data, $attrs) = @_;
+
+    $attrs //= {};
+    my $source      = $self->result_source;
+    my $key_name    = $attrs->{key} || 'primary';
+    my @unique_cols = $source->unique_constraint_columns($key_name);
+
+    my %lookup;
+    if (@unique_cols) {
+        @lookup{@unique_cols} = @{$data}{@unique_cols};
+    } else {
+        %lookup = %$data;
+    }
+
+    # Try to find the record
+    return $self->find(\%lookup, $attrs)->then(sub {
+        my $row = shift;
+
+        if ($row) {
+            # Found: Perform an update with the provided data
+            return $row->update($data);
+        }
+
+        # Not Found: Create it
+        return $self->create($data);
+    });
+}
+
+=head2 update_or_new
+
+    my $future = $rs->update_or_new({
+         email => 'user@example.com',
+         name  => 'New Name'
+    }, { key => 'user_email' });
+
+Similar to L</update_or_create>, but with a focus on in-memory instantiation.
+
+=over 4
+
+=item * If a matching record is found in the database, it is updated and the resulting
+object is returned.
+
+=item * If no record is found, a new row object is instantiated (using L</new_result>)
+but B<not yet saved> to the database.
+
+=back
+
+This is useful for workflows where you want to ensure an object is synchronized with
+the database if it exists, but you aren't yet ready to commit a new record to storage.
+
+Returns a L<Future> resolving to a L<DBIx::Class::Async::Row> object.
+
+=cut
+
+sub update_or_new {
+    my ($self, $data, $attrs) = @_;
+
+    # Behavior: find it and update it, or return a 'new' object with the data
+    return $self->update_or_create($data, $attrs)->then(sub {
+        my $row = shift;
+        return Future->done($row);
     });
 }
 

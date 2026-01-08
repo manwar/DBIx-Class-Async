@@ -10,7 +10,7 @@ DBIx::Class::Async::Cursor - Asynchronous resultset cursor
 
 =head1 VERSION
 
-Version 0.16
+Version 0.17
 
 =head1 SYNOPSIS
 

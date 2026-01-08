@@ -40,6 +40,7 @@ t/25-related-resultset.t
 t/26-slice.t
 t/27-async-populate.t
 t/28-find-or.t
+t/29-update-or.t
 t/manifest.t
 t/pod.t
 t/test.db
