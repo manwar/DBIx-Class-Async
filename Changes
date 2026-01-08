@@ -1,5 +1,8 @@
 Revision history for DBIx::Class::Async
 
+0.16  2026-01-08
+      - Added sub find_or_[new|create]() to DBIx::Class::Async::ResultSet.
+
 0.15  2026-01-08
       - Added sub populate() and populate_bulk() to DBIx::Class::Async::ResultSet.
 

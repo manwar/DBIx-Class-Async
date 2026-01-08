@@ -17,11 +17,11 @@ DBIx::Class::Async::ResultSet - Asynchronous ResultSet for DBIx::Class::Async
 
 =head1 VERSION
 
-Version 0.15
+Version 0.16
 
 =cut
 
-our $VERSION = '0.15';
+our $VERSION = '0.16';
 
 =head1 SYNOPSIS
 
@@ -614,6 +614,75 @@ sub find {
 
     # Fully async: search builds query, single_future executes async
     return $self->search($cond)->single_future;
+}
+
+=head2 find_or_new
+
+  my $future = $rs->find_or_new({ name => 'Alice' }, { key => 'user_name' });
+
+  $future->on_done(sub {
+      my $user = shift;
+      $user->insert if !$user->in_storage;
+  });
+
+Finds a record using C<find>. If no row is found, it returns a new Result object
+inflated with the provided data. This object is B<not> yet saved to the database.
+
+=cut
+
+sub find_or_new {
+    my ($self, $data, $attrs) = @_;
+
+    # 1. Attempt to find the record first
+    return $self->find($data, $attrs)->then(sub {
+        my ($row) = @_;
+
+        # 2. If found, return it
+        return Future->done($row) if $row;
+
+        # 3. If not found, instantiate a new result object locally.
+        # We merge the search data with ResultSet conditions (like foreign keys).
+        my %new_data = ( %{$self->{_cond} || {}}, %$data );
+        my %clean_data;
+        while (my ($k, $v) = each %new_data) {
+            (my $clean_key = $k)    =~ s/^(?:foreign|self)\.//;
+            $clean_data{$clean_key} = $v;
+        }
+
+        return Future->done($self->new_result(\%clean_data));
+    });
+}
+
+=head2 find_or_create
+
+  my $future = $rs->find_or_create({ name => 'Bob' });
+
+Attempts to find a record. If it does not exist, it performs an C<INSERT> and
+returns the resulting Result object.
+
+=cut
+
+sub find_or_create {
+    my ($self, $data, $attrs) = @_;
+
+    $attrs //= {};
+    my $source      = $self->result_source;
+    my $key_name    = $attrs->{key} || 'primary';
+    my @unique_cols = $source->unique_constraint_columns($key_name);
+
+    # Extract only the unique identifier columns for the lookup
+    my %lookup;
+    if (@unique_cols) {
+        @lookup{@unique_cols} = @{$data}{@unique_cols};
+    } else {
+        %lookup = %$data;
+    }
+
+    return $self->find(\%lookup, $attrs)->then(sub {
+        my $row = shift;
+        return Future->done($row) if $row;
+        return $self->create($data);
+    });
 }
 
 =head2 first
