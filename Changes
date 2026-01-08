@@ -1,5 +1,8 @@
 Revision history for DBIx::Class::Async
 
+0.19  2026-01-08
+      - Added sub search_related[_rs] to DBIx::Class::Async::ResultSet.
+
 0.18  2026-01-08
       - Added sub delete_all() to DBIx::Class::Async::ResultSet.
 

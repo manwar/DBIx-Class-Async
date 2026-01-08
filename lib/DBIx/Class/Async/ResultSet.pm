@@ -17,11 +17,11 @@ DBIx::Class::Async::ResultSet - Asynchronous ResultSet for DBIx::Class::Async
 
 =head1 VERSION
 
-Version 0.18
+Version 0.19
 
 =cut
 
-our $VERSION = '0.18';
+our $VERSION = '0.19';
 
 =head1 SYNOPSIS
 
@@ -1302,6 +1302,41 @@ sub search {
     return $clone;
 }
 
+=head2 search_related
+
+  # Scalar context: returns a ResultSet
+  my $new_rs = $rs->search_related('orders');
+
+  # List context: returns a Future (implicit ->all)
+  my $future = $rs->search_related('orders');
+  my @orders = $future->get;
+
+In scalar context, works exactly like L</search_related_rs>. In list context, it
+returns a L<Future> that resolves to the list of objects in that relationship.
+
+=cut
+
+sub search_related {
+    my $self = shift;
+    return wantarray
+        ? $self->_do_search_related(@_)->all
+        : $self->_do_search_related(@_);
+}
+
+=head2 search_related_rs
+
+  my $rel_rs = $rs->search_related_rs('relationship_name', \%cond?, \%attrs?);
+
+Returns a new L<DBIx::Class::Async::ResultSet> representing the specified relationship.
+This is a synchronous metadata operation and does not hit the database.
+
+=cut
+
+sub search_related_rs {
+    my $self = shift;
+    return $self->_do_search_related(@_);
+}
+
 =head2 single
 
     my $row = $rs->single;
@@ -1707,6 +1742,56 @@ database queries.
 
 These methods are for internal use and are documented for completeness.
 
+=head2 _do_search_related
+
+  my $new_async_rs = $rs->_do_search_related($rel_name, $cond, $attrs);
+
+An internal helper method that performs the heavy lifting for L</search_related>
+and L</search_related_rs>.
+
+B<NOTE:> This method exists to break deep recursion issues caused by
+L<DBIx::Class> method aliasing. It bypasses the standard method dispatcher by
+manually instantiating a native L<DBIx::Class::ResultSet> to calculate
+relationship metadata before re-wrapping the result in the Async class.
+
+=over 4
+
+=item * B<Arguments:> Same as L</search_related_rs>.
+
+=item * B<Returns:> A new L<DBIx::Class::Async::ResultSet> object.
+
+=back
+
+=cut
+
+sub _do_search_related {
+    my ($self, $rel_name, $cond, $attrs) = @_;
+
+    # 1. Get the Raw ResultSource
+    my $source = $self->{_source} || $self->{schema}->source($self->{source_name});
+
+    # 2. Create a NATIVE DBIC ResultSet directly from the source
+    require DBIx::Class::ResultSet;
+    my $native_rs = DBIx::Class::ResultSet->new($source, {
+        cond  => $self->{_cond},
+        attrs => $self->{_attrs}
+    });
+
+    # 3. Perform the pivot on the native object
+    my $related_native_rs = $native_rs->search_related($rel_name, $cond, $attrs);
+
+    # 4. Manually construct the new Async RS object (Bypassing 'new')
+    return bless {
+        %$self,
+        source_name => $related_native_rs->result_source->source_name,
+        _cond       => $related_native_rs->{cond},
+        _attrs      => $related_native_rs->{attrs},
+        _source     => $related_native_rs->result_source,
+        _rows       => undef,
+        _pos        => 0,
+    }, ref($self);
+}
+
 =head2 _get_source
 
     my $source = $rs->_get_source;
@@ -1879,7 +1964,7 @@ sub _inflate_nested_prefetch {
     }
 }
 
-=head2 _find_reverse_relationship (Internal)
+=head2 _find_reverse_relationship
 
 Finds the reverse relationship name on the related source.
 
