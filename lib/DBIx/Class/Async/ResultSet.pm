@@ -17,11 +17,11 @@ DBIx::Class::Async::ResultSet - Asynchronous ResultSet for DBIx::Class::Async
 
 =head1 VERSION
 
-Version 0.14
+Version 0.15
 
 =cut
 
-our $VERSION = '0.14';
+our $VERSION = '0.15';
 
 =head1 SYNOPSIS
 
@@ -772,6 +772,169 @@ sub next {
 
     return $self->{_rows}[$self->{_pos}++];
 }
+
+
+=head2 populate
+
+  my $future = $rs->populate([
+      { title => 'First Post', content => 'Hello' },
+      { title => 'Second Post', content => 'World' },
+  ]);
+
+  $future->on_done(sub {
+      my @result_objects = @_;
+      print "Inserted: " . $_->title . "\n" for @result_objects;
+  });
+
+This method provides a way to insert multiple rows into the database and receive
+the resulting objects back. It behaves similarly to L<DBIx::Class::ResultSet/populate>,
+but operates asynchronously and returns a L<Future>.
+
+=over 4
+
+=item * B<Arguments:> C<[ \%col_data, ... ]> or C<[ \@column_list, [ \@row_values, ... ] ]>
+
+=item * B<Return Value:> A L<Future> that resolves to a list of Result objects.
+
+=back
+
+B<Processing Logic:>
+If an arrayref of hashrefs is provided, the method automatically merges any
+existing ResultSet conditions (such as foreign keys from a relationship) into
+each row. It also cleans C<foreign.> or C<self.> prefixes from keys to ensure
+compatibility with SQL insert statements.
+
+B<Note:> This method inflates every inserted row into a Result object. For very
+large datasets where objects are not needed, use L</populate_bulk> for
+significantly better performance.
+
+=cut
+
+sub populate {
+    my ($self, $data) = @_;
+
+    # Validating input similar to DBIC
+    unless (ref $data eq 'ARRAY') {
+        return Future->fail("populate() requires an arrayref", "usage_error");
+    }
+
+    # If the data is an array of hashrefs, we might need to merge
+    # current ResultSet conditions (like foreign keys), similar to create()
+    my $final_data = $data;
+    if (ref $data->[0] eq 'HASH') {
+        $final_data = [ map {
+            my $row = $_;
+            my %to_insert = ( %{$self->{_cond} || {}}, %$row );
+            my %clean_data;
+            while (my ($k, $v) = each %to_insert) {
+                my $clean_key = $k;
+                $clean_key =~ s/^(?:foreign|self)\.//;
+                $clean_data{$clean_key} = $v;
+            }
+            \%clean_data;
+        } @$data ];
+    }
+
+    return $self->{async_db}->populate(
+        $self->{source_name},
+        $final_data
+    )->then(sub {
+        my ($results) = @_;
+
+        # Error handling
+        if (ref $results eq 'HASH' && $results->{__error}) {
+            return Future->fail($results->{__error}, 'db_error');
+        }
+
+        # Re-inflate hashes back into DBIx::Class::Async::Result objects
+        my @objects = map { $self->new_result($_) } @$results;
+
+        # Return as list or arrayref depending on context is tricky in Promises.
+        # Usually, async APIs return the collection and let the user handle it.
+        return Future->done(@objects);
+    });
+}
+
+=head2 populate_bulk
+
+  my $future = $rs->populate_bulk(\@large_dataset);
+
+  $future->on_done(sub {
+      print "Bulk insert successful\n";
+  });
+
+A high-performance version of C<populate> intended for large-scale data ingestion.
+
+=over 4
+
+=item * B<Arguments:> C<[ \%col_data, ... ]> or C<[ \@column_list, [ \@row_values, ... ] ]>
+
+=item * B<Return Value:> A L<Future> that resolves to a truthy value (1) on success.
+
+=back
+
+B<Key Differences from populate:>
+
+=over 4
+
+=item 1. B<Context:> Executes the database operation in void context on the worker side.
+
+=item 2. B<No Inflation:> Does not create Result objects for the inserted rows.
+
+=item 3. B<Efficiency:> Reduces memory overhead and Inter-Process Communication (IPC)
+payload by only returning a success status rather than the full row data.
+
+=back
+
+Use this method when you need to "fire and forget" large amounts of data where
+individual object manipulation is not required immediately after insertion.
+
+=cut
+
+sub populate_bulk {
+    my ($self, $data) = @_;
+
+    # 1. Validation: Ensure we have an arrayref
+    unless (ref $data eq 'ARRAY') {
+        return Future->fail("populate_bulk() requires an arrayref", "usage_error");
+    }
+
+    # 1. Data Preparation: Handle potential prefixes and merge ResultSet conditions
+    my $final_data = $data;
+
+    # We only perform merging/cleaning if we are dealing with an array of hashrefs.
+    # If it's an array of arrays (bulk insert), we pass it through as-is for maximum speed.
+    if (ref $data->[0] eq 'HASH') {
+        $final_data = [ map {
+            my $row = $_;
+            my %to_insert = ( %{$self->{_cond} || {}}, %$row );
+            my %clean_data;
+            while (my ($k, $v) = each %to_insert) {
+                my $clean_key = $k;
+                $clean_key =~ s/^(?:foreign|self)\.//;
+                $clean_data{$clean_key} = $v;
+            }
+            \%clean_data;
+        } @$data ];
+    }
+
+    # 3. Execute: Call the background worker using the 'populate_bulk' operation
+    return $self->{async_db}->populate_bulk(
+        $self->{source_name},
+        $final_data
+    )->then(sub {
+        my ($result) = @_;
+
+        # 4. Error Handling
+        if (ref $result eq 'HASH' && $result->{__error}) {
+            return Future->fail($result->{__error}, 'db_error');
+        }
+
+        # 5. Return Success: We return a simple truthy value instead of a list of objects
+        return Future->done(1);
+    });
+}
+
 
 =head2 prefetch
 

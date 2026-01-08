@@ -1,6 +1,6 @@
 package DBIx::Class::Async;
 
-$DBIx::Class::Async::VERSION   = '0.14';
+$DBIx::Class::Async::VERSION   = '0.15';
 $DBIx::Class::Async::AUTHORITY = 'cpan:MANWAR';
 
 =head1 NAME
@@ -9,7 +9,7 @@ DBIx::Class::Async - Asynchronous database operations for DBIx::Class
 
 =head1 VERSION
 
-Version 0.14
+Version 0.15
 
 =cut
 
@@ -1260,6 +1260,33 @@ sub _execute_operation {
             my $rs  = $schema->resultset($source_name);
             my $row = $rs->create($data);
             return { $row->get_columns };
+        }
+        catch {
+            return { __error => $_ };
+        }
+    }
+    elsif ($operation eq 'populate') {
+        my ($source_name, $data) = @args;
+        try {
+            my $rs = $schema->resultset($source_name);
+
+            # DBIC's populate returns objects or data depending on context.
+            # Here we call it and ensure we return the column data for the async side
+            # to re-inflate into objects.
+            my @rows = $rs->populate($data);
+
+            return [ map { { $_->get_columns } } @rows ];
+        }
+        catch {
+            return { __error => $_ };
+        }
+    }
+    elsif ($operation eq 'populate_bulk') {
+        my ($source_name, $data) = @args;
+        try {
+            # Calling in void context triggers DBIC's fast path
+            $schema->resultset($source_name)->populate($data);
+            return { success => 1 };
         }
         catch {
             return { __error => $_ };
