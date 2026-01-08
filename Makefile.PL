@@ -67,6 +67,9 @@ WriteMakefile(
                 url  => 'https://github.com/manwar/DBIx-Class-Async.git',
                 web  => 'https://github.com/manwar/DBIx-Class-Async',
             },
+            bugtracker => {
+                web => 'https://github.com/manwar/DBIx-Class-Async/issues'
+            },
         }})
      : ()
     ),
