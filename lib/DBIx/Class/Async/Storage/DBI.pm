@@ -11,11 +11,11 @@ DBIx::Class::Async::Storage::DBI - DBI-based async storage backend for DBIx::Cla
 
 =head1 VERSION
 
-Version 0.26
+Version 0.27
 
 =cut
 
-our $VERSION = '0.26';
+our $VERSION = '0.27';
 
 =head1 SYNOPSIS
 
@@ -69,8 +69,6 @@ This method exists for API compatibility with standard DBIx::Class storage
 objects, but always returns C<undef> to indicate that direct database handle
 access is not available in async mode.
 
-=head3 Example Usage
-
   my $storage = $schema->storage;
   my $dbh = $storage->dbh;  # Always undef in async mode
 
@@ -101,7 +99,7 @@ The cursor provides a low-level interface for fetching rows one at a time
 using Futures, which is useful for processing large result sets without
 loading all rows into memory at once.
 
-=head3 Arguments
+B<Arguments>
 
 =over 4
 
@@ -109,12 +107,10 @@ loading all rows into memory at once.
 
 =back
 
-=head3 Returns
+B<Returns>
 
 A L<DBIx::Class::Async::Storage::DBI::Cursor> object configured for the
 given ResultSet.
-
-=head3 Example Usage
 
   use Future::AsyncAwait;
 
@@ -162,7 +158,7 @@ When called without arguments, returns the current debug level (defaults to 0).
 When called with an argument, sets the debug level to the specified value and
 returns it.
 
-=head3 Arguments
+B<Arguments>
 
 =over 4
 
@@ -170,11 +166,9 @@ returns it.
 
 =back
 
-=head3 Returns
+B<Returns>
 
 The current or newly set debug level.
-
-=head3 Example Usage
 
   # Enable debugging
   $storage->debug(1);

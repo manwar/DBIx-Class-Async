@@ -10,11 +10,11 @@ DBIx::Class::Async::Storage::DBI::Cursor - Asynchronous cursor for DBIx::Class R
 
 =head1 VERSION
 
-Version 0.26
+Version 0.27
 
 =cut
 
-our $VERSION = '0.26';
+our $VERSION = '0.27';
 
 =head1 SYNOPSIS
 
@@ -60,7 +60,7 @@ loading all rows into memory at once.
 
 Creates a new asynchronous cursor.
 
-=head3 Arguments
+B<Arguments>
 
 =over 4
 
@@ -77,7 +77,7 @@ as the batch size for pagination.
 
 =back
 
-=head3 Batch Size
+B<Batch Size>
 
 The cursor fetches rows in batches. The batch size is determined as follows:
 
@@ -127,7 +127,7 @@ The cursor may then be iterated again from the start.
 
 Returns the cursor itself.
 
-=head1 INTERNAL STATE
+B<INTERNAL STATE>
 
 The cursor maintains the following internal state:
 
@@ -172,7 +172,7 @@ sub reset {
 
 Returns a L<Future> that resolves to the next row in the ResultSet.
 
-=head3 Behavior
+B<Behaviour>
 
 =over 4
 

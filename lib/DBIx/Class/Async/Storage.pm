@@ -10,11 +10,11 @@ DBIx::Class::Async::Storage - Storage Layer for DBIx::Class::Async
 
 =head1 VERSION
 
-Version 0.26
+Version 0.27
 
 =cut
 
-our $VERSION = '0.26';
+our $VERSION = '0.27';
 
 =head1 SYNOPSIS
 
@@ -100,7 +100,7 @@ This is an abstract method that must be implemented by storage subclasses
 (such as L<DBIx::Class::Async::Storage::DBI>). Calling this method directly
 on the base storage class will throw an error.
 
-=head3 Arguments
+B<Arguments>
 
 =over 4
 
@@ -108,7 +108,7 @@ on the base storage class will throw an error.
 
 =back
 
-=head3 Returns
+B<Returns>
 
 A cursor object appropriate for the storage type. For DBI-based storage,
 this returns a L<DBIx::Class::Async::Storage::DBI::Cursor> object.
