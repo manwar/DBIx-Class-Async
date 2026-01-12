@@ -1,5 +1,8 @@
 Revision history for DBIx::Class::Async
 
+0.25  2026-01-12
+      - Added sub DBIx::Class::Async::Row::id().
+
 0.24  2026-01-11
       - Added the following methods to DBIx::Class::Async::Row
         - is_column_changed

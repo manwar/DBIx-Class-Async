@@ -15,11 +15,11 @@ DBIx::Class::Async::Row - Asynchronous row object for DBIx::Class::Async
 
 =head1 VERSION
 
-Version 0.24
+Version 0.25
 
 =cut
 
-our $VERSION = '0.24';
+our $VERSION = '0.25';
 
 =head1 SYNOPSIS
 
@@ -34,7 +34,7 @@ our $VERSION = '0.24';
     );
 
     # Access columns
-    my $name = $row->name;  # Returns 'John'
+    my $name  = $row->name;                 # Returns 'John'
     my $email = $row->get_column('email');  # Returns 'john@example.com'
 
     # Get all columns
@@ -165,7 +165,7 @@ related type.
 
 B<Note:> Just like L<DBIx::Class::Async::ResultSet/create>, this method
 automatically merges the relationship's foreign key constraints into the
-provided hashref, ensuring that NOT NULL constraints on the foreign key
+provided hashref, ensuring that C<NOT NULL> constraints on the foreign key
 columns are satisfied.
 
 =cut
@@ -437,6 +437,90 @@ sub get_inflated_columns {
     }
 
     return %inflated;
+}
+
+=head2 id
+
+  my $id  = $row->id;          # Single primary key
+  my @ids = $row->id;          # Composite primary key (multiple values)
+
+Returns the primary key value(s) for a row.
+
+=over 4
+
+=item B<Arguments>
+
+None
+
+=item B<Returns>
+
+In list context: List of primary key values.
+
+In scalar context: Single primary key value (for single-column primary keys) or
+arrayref of values (for composite primary keys).
+
+=item B<Throws>
+
+Dies if:
+- Called as a class method
+- No primary key defined for the source
+- Row is not in storage and primary key value is undefined
+
+=item B<Examples>
+
+  # Single primary key
+  my $user = $rs->find(1)->get;
+  my $id = $user->id;  # Returns: 1
+
+  # Composite primary key
+  my $record = $rs->find({ key1 => 1, key2 => 2 })->get;
+  my @ids = $record->id;  # Returns: (1, 2)
+
+  # Arrayref in scalar context (composite key)
+  my $ids = $record->id;  # Returns: [1, 2]
+
+=back
+
+=cut
+
+sub id {
+    my $self = shift;
+
+    croak("id() cannot be called as a class method")
+        unless ref $self;
+
+    my @pk_columns = $self->_get_source->primary_columns;
+
+    croak("No primary key defined for " . $self->{source_name})
+        unless @pk_columns;
+
+    my @pk_values;
+    foreach my $col (@pk_columns) {
+        my $val = $self->get_column($col);
+
+        # Warn if primary key is undefined (usually means row not in storage)
+        unless (defined $val) {
+            carp("Primary key column '$col' is undefined for " .
+                 $self->{source_name});
+        }
+
+        push @pk_values, $val;
+    }
+
+    # Return based on context
+    if (wantarray) {
+        # List context: return list
+        return @pk_values;
+    } else {
+        # Scalar context
+        if (@pk_values == 1) {
+            # Single primary key: return the value
+            return $pk_values[0];
+        } else {
+            # Composite primary key: return arrayref
+            return \@pk_values;
+        }
+    }
 }
 
 =head2 in_storage
