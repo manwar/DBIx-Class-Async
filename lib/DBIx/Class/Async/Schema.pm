@@ -14,7 +14,7 @@ use DBIx::Class::Async::TxnGuard;
 use DBIx::Class::Async::ResultSet;
 use DBIx::Class::Async::Storage::DBI;
 
-our $VERSION = '0.29';
+our $VERSION = '0.30';
 
 =head1 NAME
 
@@ -22,7 +22,7 @@ DBIx::Class::Async::Schema - Asynchronous schema for DBIx::Class::Async
 
 =head1 VERSION
 
-Version 0.29
+Version 0.30
 
 =cut
 
@@ -539,6 +539,25 @@ sub resultset {
     );
 }
 
+=head2 schema_version
+
+    my $version = $schema->schema_version;
+
+Returns the normalized version string of the underlying L<DBIx::Class::Schema>
+class.
+
+=cut
+
+sub schema_version {
+    my $self  = shift;
+    my $class = $self->{schema_class};
+
+    croak("schema_class is not defined in " . ref($self)) unless $class;
+
+    # Delegates to the class method on the Result class
+    return $class->schema_version;
+}
+
 =head2 set_default_context
 
     $schema->set_default_context;
@@ -778,6 +797,26 @@ throw an error.
 
 =cut
 
+=head2 unregister_source
+
+    $schema->unregister_source($source_name);
+
+Arguments: $source_name
+
+Removes the specified L<DBIx::Class::ResultSource> from the schema class.
+This is useful in test suites to ensure a clean state between tests.
+
+=cut
+
+sub unregister_source {
+    my ($self, $source_name) = @_;
+    my $class = $self->{schema_class};
+
+    croak("schema_class is not defined in " . ref($self)) unless $class;
+
+    return $class->unregister_source($source_name);
+}
+
 sub AUTOLOAD {
     my $self = shift;
 
@@ -805,6 +844,17 @@ sub DESTROY {
     $self->disconnect;
 }
 
+=head1 DESIGN ARCHITECTURE
+
+This module acts as an asynchronous proxy for L<DBIx::Class::Schema>. While
+data-retrieval methods (like C<search>, C<create>, and C<find>) return
+L<Future> objects and execute in worker pools, metadata management methods
+(like C<unregister_source> and C<schema_version>) are delegated directly
+to the underlying synchronous schema class to ensure metadata consistency
+across processes.
+
+=cut
+
 =head1 PERFORMANCE OPTIMISATION
 
 =head2 Resolving the N+1 Query Problem
@@ -814,8 +864,6 @@ One of the most common performance bottlenecks in ORMs is the "N+1" query patter
 In an asynchronous environment, this is particularly costly due to the overhead of message passing between the main process and the database worker pool.
 
 C<DBIx::Class::Async::Schema> resolves this by supporting the standard C<DBIx::Class> B<prefetch> attribute.
-
-
 
 =head3 The Slow Way (N+1 Pattern)
 
