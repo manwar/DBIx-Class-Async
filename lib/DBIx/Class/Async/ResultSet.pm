@@ -16,11 +16,11 @@ DBIx::Class::Async::ResultSet - Asynchronous resultset for DBIx::Class::Async
 
 =head1 VERSION
 
-Version 0.31
+Version 0.32
 
 =cut
 
-our $VERSION = '0.31';
+our $VERSION = '0.32';
 
 =head1 SYNOPSIS
 
@@ -166,18 +166,12 @@ sub new_result {
 
     my $row_class = "DBIx::Class::Async::Row::" . $self->{source_name};
 
-    # 1. Setup inheritance and dynamic accessors
+    # 1. Setup inheritance ONLY (Keep this part!)
+    # We need to ensure the specific Row class inherits from the base Async::Row
     {
         no strict 'refs';
         unless (@{"${row_class}::ISA"}) {
             @{"${row_class}::ISA"} = ('DBIx::Class::Async::Row');
-            my $source = $self->result_source;
-            foreach my $col ($source->columns) {
-                *{"${row_class}::$col"} = sub {
-                    my $inner = shift;
-                    return @_ ? $inner->set_column($col, shift) : $inner->get_column($col);
-                };
-            }
         }
     }
 
@@ -185,6 +179,7 @@ sub new_result {
     my $source = $self->result_source;
     my ($pk)   = $source->primary_columns;
 
+    # 2. Determine storage state
     my $is_in_storage = 0;
     if (exists $data->{_in_storage}) {
         $is_in_storage = delete $data->{_in_storage};
@@ -192,16 +187,39 @@ sub new_result {
         $is_in_storage = 1;
     }
 
+    # 3. Data Normalization
+    my %clean_data;
+
+    # Get official columns PLUS any virtual aliases (like 'count')
+    my @expected_cols = $source->columns;
+    if (my $as = $self->{_attrs}->{as}) {
+        push @expected_cols, @$as;
+    }
+
+    foreach my $col (@expected_cols) {
+        # Search $data for exact name, prefixed (me.col), or case-insensitive match
+        my ($match) = grep {
+            lc($_) eq lc($col) || $_ =~ /\.\Q$col\E$/i
+        } keys %$data;
+
+        if (defined $match) {
+            $clean_data{$col} = $data->{$match};
+        }
+    }
+
+    # 4. Instantiate the Row
+    # Row->new calls _ensure_accessors, so the methods are created there!
     my $row = $row_class->new(
         schema      => $self->{schema},
         async_db    => $self->{async_db},
         source_name => $self->{source_name},
-        row_data    => $data,
+        row_data    => \%clean_data,
         in_storage  => $is_in_storage,
     );
 
-    # If it's from storage, it shouldn't be dirty
+    # 5. Finalize state
     $row->{_dirty} = {} if $is_in_storage;
+    $row->{_data}  = \%clean_data;
 
     return $row;
 }
@@ -210,7 +228,7 @@ sub new_result {
 
   my $new_rs = $rs->new_result_set({
       entries       => \@prefetched_data,
-      is_prefetched => 1
+      is_prefetched => 0
   });
 
 Creates a new instance (clone) of the current ResultSet class, inheriting the
@@ -362,7 +380,21 @@ A list containing two hash references: conditions and attributes.
 
 sub as_query {
     my $self = shift;
-    return ($self->{_cond}, $self->{_attrs});
+    my $bridge = $self->{async_db};
+    my $schema_class = $bridge->{schema_class};
+
+    unless ($schema_class->can('resultset')) {
+        eval "require $schema_class" or die "as_query: Could not load $schema_class: $@";
+    }
+
+    $bridge->{_metadata_schema} //= $schema_class->connect();
+
+    my $real_rs = $bridge->{_metadata_schema}
+                         ->resultset($self->{source_name})
+                         ->search($self->{_cond}, $self->{_attrs});
+
+    # This always returns the \[ $sql, @bind ] structure
+    return $real_rs->as_query;
 }
 
 =head2 count
@@ -430,6 +462,78 @@ sub count_future {
         $self->{source_name},
         $self->{_cond}
     );
+}
+
+=head2 count_literal
+
+    my $count = await $rs->count_literal('age > ? AND status = ?', 18, 'active');
+
+=over 4
+
+=item Arguments: $sql_fragment, @standalone_bind_values
+
+=item Return Value: L<Future> (resolving to Integer)
+
+=back
+
+Counts the results in a literal query.
+
+This method is provided primarily for L<Class::DBI> compatibility. It is
+equivalent to calling L</search_literal> with the passed arguments,
+followed by L</count>.
+
+Because this triggers an immediate database query, it returns a L<Future>
+that will resolve to the integer count once the worker process has
+completed the execution.
+
+B<Note:> Always use placeholders (C<?>) in your C<$sql_fragment> to
+maintain security and prevent SQL injection.
+
+=cut
+
+sub count_literal {
+    my ($self, $sql_fragment, @bind) = @_;
+
+    # This satisfies your requirement: search_literal then count.
+    # Since search_literal returns a ResultSet, and count returns a Future,
+    # this returns the Future for the count operation.
+    return $self->search_literal($sql_fragment, @bind)->count;
+}
+
+=head2 count_rs
+
+    my $count_rs = $rs->count_rs({ active => 1 });
+    # Use as a subquery:
+    my $users = await $schema->resultset('User')->search({
+        login_count => $count_rs->as_query
+    })->all;
+
+=over 4
+
+=item Arguments: $cond?, \%attrs?
+
+=item Return Value: L<DBIx::Class::Async::ResultSet>
+
+=back
+
+Returns a new ResultSet object that, when executed, performs a C<COUNT(*)>
+operation. Unlike C<count>, this method is lazy and does not dispatch a
+request to the worker pool immediately. It is primarily useful for
+constructing subqueries or complex joins where the count is part of a
+larger query.
+
+=cut
+
+sub count_rs {
+    my ($self, $cond, $attrs) = @_;
+
+    # count_rs is lazy. It doesn't call the worker yet.
+    # It returns a new ResultSet constrained to a count.
+    return $self->search($cond, {
+        %{$attrs || {}},
+        select => [ { count => '*' } ],
+        as     => [ 'count' ],
+    });
 }
 
 =head2 create
@@ -1388,17 +1492,76 @@ are merged with any existing ones from the original result set.
 sub search {
     my ($self, $cond, $attrs) = @_;
 
+    # Handle the condition merging carefully
+    my $new_cond;
+
+    # 1. If the new condition is a literal (Scalar/Ref), it overrides/becomes the condition
+    if (ref $cond eq 'REF' || ref $cond eq 'SCALAR') {
+        $new_cond = $cond;
+    }
+    # 2. If the current existing condition is a literal,
+    # and we try to add a hash, we usually want to encapsulate or override.
+    # For now, let's allow the new condition to take precedence if it's a hash.
+    elsif (ref $cond eq 'HASH') {
+        if (ref $self->{_cond} eq 'HASH') {
+            $new_cond = { %{$self->{_cond}}, %$cond };
+        }
+        else {
+            # If current is literal and new is hash, prioritize the new hash
+            # or handle based on your preference. Most DBIC users expect a merge.
+            $new_cond = $cond;
+        }
+    }
+    else {
+        # Fallback for simple cases or undef
+        $new_cond = $cond || $self->{_cond};
+    }
+
     my $clone = bless {
         %$self,
-        _cond         => { %{$self->{_cond}},  %{$cond  || {}} },
-        _attrs        => { %{$self->{_attrs}}, %{$attrs || {}} },
+        _cond         => $new_cond,
+        _attrs        => { %{$self->{_attrs} || {}}, %{$attrs || {}} },
         _rows         => undef,
         _pos          => 0,
-        entries       => undef, # Clones lose prefetch data unless re-fetched
+        entries       => undef,
         is_prefetched => 0,
     }, ref $self;
 
     return $clone;
+}
+
+=head2 search_literal
+
+    my $rs = $schema->resultset('User')->search_literal(
+        'age > ? AND status = ?',
+        18, 'active'
+    );
+
+=over 4
+
+=item Arguments: $sql_fragment, @bind_values
+
+=item Return Value: L<DBIx::Class::Async::ResultSet>
+
+=back
+
+Performs a search using a literal SQL fragment. This is provided for
+compatibility with L<Class::DBI>.
+
+B<Warning:> Use this method with caution. Always use placeholders (C<?>)
+for values to prevent SQL injection. Literal fragments are not parsed or
+validated by the ORM before being sent to the database.
+
+=cut
+
+sub search_literal {
+    my ($self, $sql_fragment, @bind) = @_;
+
+    # In DBIC, search_literal is a shorthand for passing
+    # the literal SQL as the first element of the condition.
+    return $self->search(
+        \[ $sql_fragment, @bind ]
+    );
 }
 
 =head2 search_related
@@ -1495,15 +1658,17 @@ attributes.
 sub single_future {
     my $self = shift;
 
-    # 1. If already prefetched
     if ($self->{is_prefetched} && $self->{entries}) {
         my $data = $self->{entries}[0];
         return Future->done($data ? $self->new_result($data) : undef);
     }
 
-    # 2. Optimization: Check for simple PK lookup
     my @pk = $self->result_source->primary_columns;
+    my $cond_type = ref $self->{_cond};
+
     if (@pk == 1
+        && $cond_type eq 'HASH'
+        && !exists $self->{_attrs}->{select}
         && keys %{$self->{_cond}} == 1
         && exists $self->{_cond}{$pk[0]}
         && !ref $self->{_cond}{$pk[0]}) {
@@ -1517,13 +1682,9 @@ sub single_future {
         });
     }
 
-    # 3. General Case - FIX IS HERE
-    return $self->search(undef, { rows => 1 })->all->then(sub {
-        my ($results) = @_; # $results is now an ARRAY reference
-
-        # Guard: Check if it's an arrayref and get the first element
-        my $row = (ref $results eq 'ARRAY') ? $results->[0] : $results;
-
+    return $self->search({}, { rows => 1 })->all->then(sub {
+        my $results = shift;
+        my $row = ($results && @$results) ? $results->[0] : undef;
         return Future->done($row);
     });
 }
@@ -1790,7 +1951,7 @@ but B<not yet saved> to the database.
 
 =back
 
-This is useful for workflows where you want to ensure an object is synchronized with
+This is useful for workflows where you want to ensure an object is synchronised with
 the database if it exists, but you aren't yet ready to commit a new record to storage.
 
 Returns a L<Future> resolving to a L<DBIx::Class::Async::Row> object.
@@ -2132,6 +2293,35 @@ sub _find_reverse_relationship {
     }
 
     return undef;
+}
+
+=head2 _resolved_attrs
+
+    my $attrs = $rs->_resolved_attrs;
+    my $rows  = $attrs->{rows};
+
+=over 4
+
+=item Return Value: HashRef
+
+=back
+
+An internal helper method that returns the raw attributes hash for the current
+ResultSet. This includes things like C<order_by>, C<join>, C<prefetch>, C<rows>,
+and C<offset>.
+
+If no attributes have been set, it returns an empty anonymous hash reference
+(C<{}>) to ensure that calls to specific keys (e.g., C<$rs->_resolved_attrs->{rows}>)
+do not trigger "not a HASH reference" errors.
+
+B<Note:> This is intended for internal use and testing. To modify attributes,
+use the L</search> method to create a new ResultSet.
+
+=cut
+
+sub _resolved_attrs {
+    my $self = shift;
+    return $self->{_attrs} // {};
 }
 
 # Chainable modifiers

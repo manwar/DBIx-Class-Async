@@ -15,11 +15,11 @@ DBIx::Class::Async::Row - Asynchronous row object for DBIx::Class::Async
 
 =head1 VERSION
 
-Version 0.31
+Version 0.32
 
 =cut
 
-our $VERSION = '0.31';
+our $VERSION = '0.32';
 
 =head1 SYNOPSIS
 
@@ -135,7 +135,7 @@ sub new {
         async_db    => $args{async_db},
         source_name => $args{source_name},
         _source     => $args{_source}  // undef,
-        _data       => $args{row_data} // {},
+        _data       => $args{row_data} || $args{_data} || {},
         _dirty      => {},
         _inflated   => {},
         _related    => {},
@@ -431,21 +431,22 @@ sub get_column {
     my ($self, $col) = @_;
 
     # Direct column access first
-    if (exists $self->{_data}
-        && ref $self->{_data} eq 'HASH'
-        && exists $self->{_data}{$col}) {
+    if (ref $self->{_data} eq 'HASH' && exists $self->{_data}{$col}) {
         # Check for column inflation if we have source info
         my $source = $self->_get_source;
-        if ($source && $source->can('column_info')) {
-            if (my $col_info = $source->column_info($col)) {
-                if (my $inflator = $col_info->{inflate}) {
-                    unless (exists $self->{_inflated}{$col}) {
-                        $self->{_inflated}{$col} = $inflator->($self->{_data}{$col});
-                    }
-                    return $self->{_inflated}{$col};
-                }
-            }
+
+        # Only attempt inflation if the source actually knows about this column
+        if ($source && $source->has_column($col)) {
+             if (my $col_info = $source->column_info($col)) {
+                 if (my $inflator = $col_info->{inflate}) {
+                     unless (exists $self->{_inflated}{$col}) {
+                         $self->{_inflated}{$col} = $inflator->($self->{_data}{$col});
+                     }
+                     return $self->{_inflated}{$col};
+                 }
+             }
         }
+        # If it's a synthetic column (like 'count') or has no inflator, just return it
         return $self->{_data}{$col};
     }
 
@@ -1155,7 +1156,7 @@ ad-hoc changes into the row.
 
 Upon success, the row's internal "dirty" tracking is reset, C<in_storage> is
 set to true, and any database-generated values (like auto-increment IDs) are
-synchronized back into the object.
+synchronised back into the object.
 
 =cut
 
@@ -1274,7 +1275,9 @@ sub AUTOLOAD {
     my ($method) = $AUTOLOAD =~ /([^:]+)$/;
 
     # 1. Immediate exit for DESTROY
-    return if $method eq 'DESTROY';
+    # AWAIT_* methods are called by Future::AsyncAwait
+    # can/isa/etc should be handled by UNIVERSAL, but just in case:
+    return if $method =~ /^(?:DESTROY|AWAIT_\w+|can|isa)$/;
 
     my $source = $self->_get_source;
 
@@ -1474,22 +1477,36 @@ sub _ensure_accessors {
     my $source = $self->_get_source or return;
     my $class  = ref($self);
 
+    # If $class is just a string (not a reference), ref() returns empty.
+    # We only want to run this on blessed instances.
+    return unless $class;
+    return if $class eq 'DBIx::Class::Async::Row';
+
+    my @cols = $source->columns;
+    return unless @cols;
+
+    # Check if the first column already has a method in this specific package
+    # We use 'no strict refs' to check the symbol table directly
+    no strict 'refs';
+    return if defined &{"${class}::$cols[0]"};
+
     # Use the source columns to ensure we cover all valid fields
     foreach my $col ($source->columns) {
-        # SKIP if it's a relationship - let AUTOLOAD/Builder handle it
         next if $source->can('relationship_info') && $source->relationship_info($col);
+
+        # CRITICAL: Create a fresh, unique copy for this specific iteration
+        my $column_name = $col;
 
         no strict 'refs';
         no warnings 'redefine';
 
-        # Install/Overwrite the accessor
-        *{"${class}::$col"} = sub {
+        *{"${class}::$column_name"} = sub {
             my $inner = shift;
+            # Use the PINNED variable, not the loop variable
             if (@_) {
-                # This is the "Magic" that makes $user->name('...') work
-                return $inner->set_column($col, shift);
+                 return $inner->set_column($column_name, shift);
             }
-            return $inner->get_column($col);
+            return $inner->get_column($column_name);
         };
     }
 }
