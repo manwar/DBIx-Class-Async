@@ -1,6 +1,6 @@
 package DBIx::Class::Async;
 
-$DBIx::Class::Async::VERSION   = '0.34';
+$DBIx::Class::Async::VERSION   = '0.35';
 $DBIx::Class::Async::AUTHORITY = 'cpan:MANWAR';
 
 =head1 NAME
@@ -9,7 +9,7 @@ DBIx::Class::Async - Asynchronous database operations for DBIx::Class
 
 =head1 VERSION
 
-Version 0.34
+Version 0.35
 
 =cut
 
@@ -809,7 +809,7 @@ Supported operation types:
         id        => 456
     }
 
-=item * B<raw> - Execute raw SQL (use with caution)
+=item * B<raw> - Execute raw SQL (Atomic)
 
     {
         type => 'raw',
@@ -817,19 +817,40 @@ Supported operation types:
         bind => [100, 1]
     }
 
+Executes a raw SQL statement via the worker's database handle. B<Note:> Always
+use placeholders (C<?> and the C<bind> attribute) to prevent SQL injection.
+
 =back
 
-All operations succeed or fail together. If any operation fails, the entire
-transaction is rolled back.
+=head3 Literal SQL Support
 
-Returns: Number of successfully executed operations.
+All C<data> hashes support standard L<DBIx::Class> literal SQL via scalar
+references, for example: C<< data => { updated_at => \'NOW()' } >>. These are
+safely serialized and executed within the worker transaction.
+
+=head3 Atomicity and Error Handling
+
+All operations within the batch are wrapped in a single database transaction.
+If any operation fails (e.g., a constraint violation or a missing record),
+the worker will immediately:
+
+=over 4
+
+=item 1. Roll back all changes made within that batch.
+
+=item 2. Fail the L<Future> in the parent process with the specific error message.
+
+=back
 
 =cut
 
 sub txn_batch {
-    my ($self, @operations) = @_;
+    my $self = shift;
 
-    # Validate operations
+    # Allow both txn_batch([$h1, $h2]) and txn_batch($h1, $h2)
+    my @operations = (ref $_[0] eq 'ARRAY') ? @{$_[0]} : @_;
+
+    # 1. Validate operations
     for my $op (@operations) {
         unless (ref $op eq 'HASH' && $op->{type}) {
             croak "Each operation must be a hashref with 'type' key";
@@ -851,21 +872,25 @@ sub txn_batch {
         }
     }
 
+    # 2. Stats and Cache
     $self->{stats}{queries}++;
     $self->_record_metric('inc', 'db_async_queries_total');
 
-    # Invalidate all cache for safety
     if (defined $self->{cache_ttl} && $self->{cache_ttl} > 0) {
         $self->{cache}->clear;
     }
 
     my $start_time = time;
 
+    # 3. Execution
     return $self->_call_worker('txn_batch', \@operations)->then(sub {
         my ($result) = @_;
         my $duration = time - $start_time;
         $self->_record_metric('observe', 'db_async_query_duration_seconds', $duration);
         return Future->done($result);
+    })->catch(sub {
+        my ($error) = @_;
+        return Future->fail("Batch Transaction Failed: $error");
     });
 }
 

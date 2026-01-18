@@ -1,5 +1,8 @@
 Revision history for DBIx::Class::Async
 
+0.35  2026-01-18
+      - Updated pod for txn_batch() and added unit test.
+
 0.34  2026-01-18
       - Added sub search_with_prefetch() to DBIx::Class::Async.
       - Added sub result_class() to DBIx::Class::Async::ResultSet.
