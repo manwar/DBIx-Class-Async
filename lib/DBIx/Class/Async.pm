@@ -822,13 +822,13 @@ use placeholders (C<?> and the C<bind> attribute) to prevent SQL injection.
 
 =back
 
-=head3 Literal SQL Support
+B<Literal SQL Support>
 
 All C<data> hashes support standard L<DBIx::Class> literal SQL via scalar
 references, for example: C<< data => { updated_at => \'NOW()' } >>. These are
 safely serialized and executed within the worker transaction.
 
-=head3 Atomicity and Error Handling
+B<Atomicity and Error Handling>
 
 All operations within the batch are wrapped in a single database transaction.
 If any operation fails (e.g., a constraint violation or a missing record),
