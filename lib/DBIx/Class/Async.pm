@@ -1,6 +1,6 @@
 package DBIx::Class::Async;
 
-$DBIx::Class::Async::VERSION   = '0.39';
+$DBIx::Class::Async::VERSION   = '0.40';
 $DBIx::Class::Async::AUTHORITY = 'cpan:MANWAR';
 
 =head1 NAME
@@ -9,7 +9,7 @@ DBIx::Class::Async - Asynchronous database operations for DBIx::Class
 
 =head1 VERSION
 
-Version 0.39
+Version 0.40
 
 =cut
 
@@ -1116,6 +1116,10 @@ sub _record_metric {
 sub _generate_cache_key {
     my ($operation, @args) = @_;
 
+    # The first element of @args is almost always the ResultSource name
+    # (e.g., 'User', 'Order'). We extract it to use as a searchable prefix.
+    my $source_prefix = (defined $args[0] && !ref $args[0]) ? $args[0] : 'global';
+
     my @clean_args = map {
         if (!defined $_) {
             'UNDEF';
@@ -1123,13 +1127,17 @@ sub _generate_cache_key {
             my $hashref = $_;
             join(',', sort map { "$_=>$hashref->{$_}" } keys %$hashref);
         } elsif (ref $_ eq 'ARRAY') {
-            join(',', @$_);
+            # Deep join for nested arrays (prefetch/columns)
+            join(',', map { ref $_ ? 'REF' : ($_ // 'UNDEF') } @$_);
+        } elsif (ref $_ eq 'SCALAR') {
+            # Handle Literal SQL like \'NOW()'
+            ${$_};
         } else {
             $_;
         }
     } @args;
 
-    return join(':', $operation, md5_hex(join('|', @clean_args)));
+    return join(':', $source_prefix, $operation, md5_hex(join('|', @clean_args)));
 }
 
 sub _build_default_cache {

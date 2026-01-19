@@ -58,6 +58,7 @@ t/42-resultset-cache.t
 t/43-result-class.t
 t/44-txn-batch.t
 t/45-pager.t
+t/46-using-chi.t
 t/manifest.t
 t/pod.t
 t/test.db

@@ -1,5 +1,8 @@
 Revision history for DBIx::Class::Async
 
+0.40  2026-01-19
+      - Added test to cover the use of CHI with DBIx::Class::Async.
+
 0.39  2026-01-18
       - Added sub is_ordered() to DBIx::Class::Async::ResultSet.
 
