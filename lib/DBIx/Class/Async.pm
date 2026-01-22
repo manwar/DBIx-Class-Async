@@ -1,6 +1,6 @@
 package DBIx::Class::Async;
 
-$DBIx::Class::Async::VERSION   = '0.43';
+$DBIx::Class::Async::VERSION   = '0.44';
 $DBIx::Class::Async::AUTHORITY = 'cpan:MANWAR';
 
 =head1 NAME
@@ -9,7 +9,7 @@ DBIx::Class::Async - Asynchronous database operations for DBIx::Class
 
 =head1 VERSION
 
-Version 0.43
+Version 0.44
 
 =cut
 
@@ -343,6 +343,17 @@ sub create {
         my $final_data = $self->_merge_result_data($resultset, $deflated_data, $result);
 
         return Future->done($self->_inflate_row($resultset, $final_data));
+    })
+    ->catch(sub {
+        my ($error) = @_;
+
+        # If it's a DBIC Exception object, extract the message
+        my $error_message = (ref $error && $error->can('msg'))
+            ? $error->msg
+            : "$error";
+
+        # Standardize the failure so the ResultSet catch can regex it
+        return Future->fail($error_message);
     });
 }
 
@@ -495,17 +506,17 @@ Returns: Hashref of row data or undef if not found.
 =cut
 
 sub find {
-    my ($self, $resultset, $id) = @_;
+    my ($self, $resultset, $id, $attrs) = @_;
 
-    state $check = compile(Str, Int|Str);
-    $check->($resultset, $id);
+    #state $check = compile(Str, Int|Str|HashRef, Maybe[HashRef]);
+    #$check->($resultset, $id, $attrs);
 
     $self->{stats}{queries}++;
     $self->_record_metric('inc', 'db_async_queries_total');
 
     my $start_time = time;
 
-    return $self->_call_worker('find', $resultset, $id)->then(sub {
+    return $self->_call_worker('find', $resultset, $id, $attrs)->then(sub {
         my ($result) = @_;
         my $duration = time - $start_time;
         $self->_record_metric('observe', 'db_async_query_duration_seconds', $duration);

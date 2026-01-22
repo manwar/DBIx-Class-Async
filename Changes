@@ -1,5 +1,17 @@
 Revision history for DBIx::Class::Async
 
+0.44 2026-01-22
+     - [FEATURE] Refactor find_or_create to be race-condition safe in
+       asynchronous environments.
+     - [IMPROVEMENT] Implement "Smart Discovery" for unique constraints;
+       automatically identifies lookup columns if 'key' is not provided.
+     - [FIX] Enhance Async.pm error propagation to correctly stringify
+       DBIx::Class::Exception objects for the parent process.
+     - [FIX] Ensure find_or_create handles the "Gap" between initial find
+       and create by performing an atomic recovery find on conflict.
+     - [FIX] Add missing $attrs propagation to find() in Async.pm to
+       support complex recovery searches.
+
 0.43  2026-01-22
       - Minor test cleanup.
 

@@ -16,11 +16,11 @@ DBIx::Class::Async::ResultSet - Asynchronous resultset for DBIx::Class::Async
 
 =head1 VERSION
 
-Version 0.43
+Version 0.44
 
 =cut
 
-our $VERSION = '0.43';
+our $VERSION = '0.44';
 
 =head1 SYNOPSIS
 
@@ -1013,24 +1013,47 @@ returns the resulting Result object.
 
 sub find_or_create {
     my ($self, $data, $attrs) = @_;
-
     $attrs //= {};
-    my $source      = $self->result_source;
-    my $key_name    = $attrs->{key} || 'primary';
+
+    my $source = $self->result_source;
+    my $key_name = $attrs->{key} || 'primary';
     my @unique_cols = $source->unique_constraint_columns($key_name);
 
-    # Extract only the unique identifier columns for the lookup
-    my %lookup;
-    if (@unique_cols) {
-        @lookup{@unique_cols} = @{$data}{@unique_cols};
-    } else {
-        %lookup = %$data;
+    # 1. Smart Discovery (Your new logic)
+    if (!grep { exists $data->{$_} } @unique_cols) {
+        foreach my $constraint ($source->unique_constraint_names) {
+            my @cols = $source->unique_constraint_columns($constraint);
+            if (grep { exists $data->{$_} } @cols) {
+                @unique_cols = @cols;
+                last;
+            }
+        }
     }
 
+    # 2. Build the %lookup for the 'find' parts
+    my %lookup = map { $_ => $data->{$_} } grep { exists $data->{$_} } @unique_cols;
+    %lookup = %$data if !keys %lookup;
+
+    # 3. Optimized Flow: Find -> (if not found) -> Create -> (if race condition) -> Find
     return $self->find(\%lookup, $attrs)->then(sub {
-        my $row = shift;
-        return Future->done($row) if $row;
-        return $self->create($data);
+        my ($row) = @_;
+        return Future->done($row) if $row; # Standard path: record exists
+
+        # Not found, try to create
+        return $self->create($data)->catch(sub {
+            my ($error) = @_;
+            my $err_str = "$error";
+
+            if ($err_str =~ /unique constraint|already exists/i) {
+                # RACE CONDITION: Someone inserted it between our 'find' and 'create'
+                return $self->find(\%lookup, $attrs)->then(sub {
+                    my ($recovered) = @_;
+                    return $recovered ? Future->done($recovered)
+                                      : Future->fail("Race condition recovery failed");
+                });
+            }
+            return Future->fail($error);
+        });
     });
 }
 
