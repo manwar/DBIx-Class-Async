@@ -42,6 +42,21 @@ subtest 'Standard Insert Merge (User Table)' => sub {
     is($merged->{name}, 'John Doe', 'Original data preserved');
 };
 
+subtest 'Composite Key Hash Merge (Multi-column RETURNING)' => sub {
+    # 'UserRole' has PK (user_id, role_id)
+    my $original = { user_id => 5, role_id => 10 };
+
+    # Simulated database return of the actual primary keys as a hashref
+    # (Common in Postgres or drivers that return the affected row)
+    my $db_result = { user_id => 5, role_id => 10, assigned_at => '2026-01-22' };
+
+    my $merged = $async->_merge_result_data('UserRole', $original, $db_result);
+
+    is($merged->{user_id}, 5, 'Composite user_id merged from hash');
+    is($merged->{role_id}, 10, 'Composite role_id merged from hash');
+    is($merged->{assigned_at}, '2026-01-22', 'Extra metadata from DB merged');
+};
+
 subtest 'Complex Hash Merge (Postgres/Defaults Style)' => sub {
     my $original = { name => 'Jane Doe' };
     # Simulated return where DB handles defaults (active = 1) and PK
@@ -108,5 +123,15 @@ subtest 'Recursive Inflation (The Bug Proof - Verified)' => sub {
     isa_ok($nested_order, 'DBIx::Class::Async::Row', 'Nested order object');
 };
 
+subtest 'Composite Key Array Merge (Positional)' => sub {
+    # 'UserRole' has PK (user_id, role_id)
+    my $original = { user_id => 0, role_id => 0 };
+    my $db_array = [55, 99];
+
+    my $merged = $async->_merge_result_data('UserRole', $original, $db_array);
+
+    is($merged->{user_id}, 55, 'user_id mapped from array index 0');
+    is($merged->{role_id}, 99, 'role_id mapped from array index 1');
+};
 
 done_testing();

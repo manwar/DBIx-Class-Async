@@ -1,6 +1,6 @@
 package DBIx::Class::Async;
 
-$DBIx::Class::Async::VERSION   = '0.47';
+$DBIx::Class::Async::VERSION   = '0.48';
 $DBIx::Class::Async::AUTHORITY = 'cpan:MANWAR';
 
 =head1 NAME
@@ -9,7 +9,7 @@ DBIx::Class::Async - Asynchronous database operations for DBIx::Class
 
 =head1 VERSION
 
-Version 0.47
+Version 0.48
 
 =cut
 
@@ -2169,20 +2169,37 @@ sub _check_response {
     return; # Not an error
 }
 
+# This handles three distinct database response patterns:
+# HASH  : The driver returned specific column/value pairs (e.g., PostgreSQL RETURNING).
+# ARRAY : The driver returned a list of values corresponding to the Primary Keys.
+#         We map these in order to the defined PK columns.
+# SCALAR: The driver returned a single value (e.g., SQLite last_insert_rowid).
+#         This is only mapped if the table has exactly one Primary Key.
+
 sub _merge_result_data {
     my ($self, $source_name, $original_data, $returned_result) = @_;
 
     my $merged = { %$original_data };
+    my $source = $self->_schema_instance->source($source_name);
+    my @pks    = $source->primary_columns;
 
     if (ref $returned_result eq 'HASH') {
         @{$merged}{keys %$returned_result} = values %$returned_result;
     }
     elsif (defined $returned_result && !ref $returned_result) {
-        my $source = $self->_schema_instance->source($source_name);
-        my @pks    = $source->primary_columns;
         # Only assign if there is exactly one PK (typical for auto-inc)
         if (scalar @pks == 1) {
             $merged->{$pks[0]} = $returned_result;
+        }
+    }
+    elsif (ref $returned_result eq 'ARRAY') {
+        # Map array values to PK columns in order
+        my $return_count = scalar @$returned_result;
+        for (my $i = 0; $i < @pks; $i++) {
+            # Safety: Don't overwrite if the DB didn't return enough values
+            last if $i >= $return_count;
+
+            $merged->{$pks[$i]} = $returned_result->[$i];
         }
     }
 
