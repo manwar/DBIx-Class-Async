@@ -58,6 +58,14 @@ sub _call_worker {
     return $future;
 }
 
+sub all {
+    my ($db, $payload) = @_;
+    warn "[PID $$] STAGE 2 (Parent): Bridge - sending 'all' to worker";
+
+    # This uses your working _call_worker logic
+    return _call_worker($db, 'all', $payload);
+}
+
 sub count {
     my ($db, $payload) = @_;
 
@@ -169,6 +177,41 @@ sub _init_workers {
 
                         warn "[PID $$] Count complete: $result";
                     }
+                    elsif ($operation eq 'search') {
+                       warn "[PID $$] STAGE 6 (Worker): Performing search";
+
+                        my $source_name = $payload->{source_name};
+                        my $cond        = $payload->{cond}  || {};
+                        my $attrs       = $payload->{attrs} || {};
+
+                        # 1. Get the ResultSet
+                        my $rs = $schema->resultset($source_name)->search($cond, $attrs);
+
+                        # 2. Execute and flatten to simple data (no objects!)
+                        # Using HRI (HashRefInflator) makes this very fast and dependency-free
+                        $rs->result_class($attrs->{result_class} || 'DBIx::Class::ResultClass::HashRefInflator');
+
+                        my @rows = $rs->all;
+                        $result  = \@rows;
+
+                        warn "[PID $$] Search complete: found " . scalar(@rows) . " rows";
+                    }
+                    elsif ($operation eq 'all') {
+                        warn "[PID $$] STAGE 6 (Worker): Performing 'all' (search)";
+
+                        my $source_name = $payload->{source_name};
+                        my $cond        = $payload->{cond};
+                        my $attrs       = $payload->{attrs};
+
+                        # Use the real schema from the worker's cache
+                        my $rs = $schema->resultset($source_name)->search($cond, $attrs);
+
+                        # Force HashRefInflator so we don't try to send Row objects across the bridge
+                        $rs->result_class($attrs->{result_class} || 'DBIx::Class::ResultClass::HashRefInflator');
+
+                        my @rows = $rs->all;
+                        $result = \@rows;
+                    }
                     else {
                         die "Unknown operation: $operation";
                     }
@@ -209,6 +252,10 @@ sub _handle_row_query {
 
 sub _next_worker {
     my ($db) = @_;
+
+    return unless $db->{_workers} && @{$db->{_workers}};
+
+    $db->{_worker_idx} //= 0;
 
     my $idx    = $db->{_worker_idx};
     my $worker = $db->{_workers}[$idx];
@@ -544,21 +591,23 @@ sub new_result_set {
 
     my $class = ref $self;
 
-    # 2. Inherit the Async Bridge and the Source context
-    $args->{async_db}    //= $self->{_async_db};
-    $args->{source_name} //= $self->{_source_name};
-    $args->{schema}      //= $self->{_schema};
+    # Convert parameter names (no underscore) to internal fields (with underscore)
+    # Inherit from parent if not provided in args
+    my $new_obj = {
+        _async_db     => $args->{async_db}    // $self->{_async_db},
+        _source_name  => $args->{source_name} // $self->{_source_name},
+        _schema       => $args->{schema}      // $self->{_schema},
+        _result_class => $args->{result_class} // $self->{_result_class},
+        _cond         => $args->{cond}        // {},
+        _attrs        => $args->{attrs}       // {},
+        _rows         => $args->{rows},
+        _pos          => $args->{pos}         // 0,
+        _pager        => $args->{pager},
+        _entries      => $args->{entries},
+        _is_prefetched => $args->{is_prefetched} // 0,
+    };
 
-    # 3. Handle result_class inheritance
-    # If a new one isn't provided, keep the parent's
-    $args->{result_class} //= $self->{_result_class};
-
-    # 4. Standard DBIC state defaults for new ResultSets
-    $args->{cond}  //= {};
-    $args->{attrs} //= {};
-
-    # 5. Bless the new object into our Async class
-    return bless $args, $class;
+    return bless $new_obj, $class;
 }
 
 sub _build_payload {
@@ -600,43 +649,64 @@ sub count {
     return DBIx::Class::Async::count($db, $payload);
 }
 
+sub all {
+    my ($self) = @_;
+
+    my $db = $self->{_async_db};
+    $db->{_stats}{_queries}++;
+
+    # We don't pass arguments here because search() already merged them
+    # into $self->{_cond} and $self->{_attrs}
+    my $payload = {
+        source_name => $self->{_source_name},
+        cond        => $self->{_cond},
+        attrs       => $self->{_attrs},
+    };
+
+    warn "[PID $$] STAGE 1 (Parent): Dispatching all()";
+
+    # Call the bridge function in Async.pm
+    return DBIx::Class::Async::all($db, $payload);
+}
+
 sub search {
     my ($self, $cond, $attrs) = @_;
 
-    # Handle the condition merging carefully
+    # --- 1. Condition Merging Logic (The "Brain") ---
     my $new_cond;
 
-    # 1. If the new condition is a literal (Scalar/Ref), it overrides/becomes the condition
+    # If the new condition is a literal (Scalar/Ref), it overrides everything
     if (ref $cond eq 'REF' || ref $cond eq 'SCALAR') {
         $new_cond = $cond;
     }
-
-    # 2. If the current existing condition is a literal,
-    # and we try to add a hash, we usually want to encapsulate or override.
-    # For now, let's allow the new condition to take precedence if it's a hash.
+    # If the new condition is a Hash, merge it with existing conditions
     elsif (ref $cond eq 'HASH') {
         if (ref $self->{_cond} eq 'HASH' && keys %{$self->{_cond}}) {
-            # ONLY use -and if we actually have two sets of criteria to join
+            # Use -and to combine the current state with the new criteria
             $new_cond = { -and => [ $self->{_cond}, $cond ] };
         }
         else {
-            # If the current condition is empty/undef, just use the new one
+            # If current condition is empty, just use the new one
             $new_cond = $cond;
         }
     }
     else {
-        # Fallback for simple cases or undef
+        # Fallback for simple cases (like passing undef)
         $new_cond = $cond || $self->{_cond};
     }
 
+    # --- 2. Attribute Merging ---
+    # Combine existing attributes (like 'join' or 'prefetch') with new ones
     my $merged_attrs = { %{$self->{_attrs} || {}}, %{$attrs || {}} };
 
+    # --- 3. Return New ResultSet Object ---
+    # We return a clone of the current object but with the updated "State"
     return $self->new_result_set({
-        cond         => $new_cond,
-        attrs        => $merged_attrs,
-        # Only reset these if they aren't in the merged attributes
+        source_name   => $self->{_source_name},
+        cond          => $new_cond,
+        attrs         => $merged_attrs,
         result_class  => $attrs->{result_class} // $self->{_result_class},
-        _rows         => $merged_attrs->{rows}  // undef,
+        _rows         => $merged_attrs->{rows}   // undef,
         _pos          => 0,
         _pager        => undef,
         entries       => undef,
@@ -766,8 +836,20 @@ note "Database file: $db_file";
 # 2. Deploy the database (Synchronously, just for setup)
 my $setup_schema = TestSchema->connect($dsn);
 $setup_schema->deploy();
-$setup_schema->resultset('User')->create({ name => 'Alice', active => 1 });
-$setup_schema->resultset('User')->create({ name => 'Bob',   active => 1 });
+
+$setup_schema->resultset('User')->create({
+    name => 'Alice',
+    email => 'alice@test.com',
+    active => 1
+});
+$setup_schema->resultset('User')->create({
+    name => 'Bob',
+    email => 'bob@test.com',
+    active => 1
+});
+
+#$setup_schema->resultset('User')->create({ name => 'Alice', active => 1 });
+#$setup_schema->resultset('User')->create({ name => 'Bob',   active => 1 });
 
 # Verify the setup worked
 my $setup_count = $setup_schema->resultset('User')->count;
@@ -810,5 +892,28 @@ note "Got count: " . (defined $count ? $count : 'undef');
 
 # 7. Verify
 is($count, 2, "The async count returned the correct number of rows via the worker pool");
+
+###############################################
+
+$rs = $async_schema->resultset('User')
+                ->search({ active => 1 })
+                ->search({ name => 'Alice' });
+
+is(ref($rs), 'DBIx::Class::Async::ResultSet', 'Still an Async ResultSet after chaining');
+is_deeply($rs->{_cond}, { -and => [ { active => 1 }, { name => 'Alice' } ] }, 'Conditions merged correctly');
+
+# 3. Test Execution via Worker
+diag "Testing async execution (Crossing to Worker)...";
+# We call 'all' which we defined to return a Future
+$future = $rs->all();
+
+# Wait for the worker to finish
+$loop->await($future);
+my $results = $future->get;
+
+is(ref($results), 'ARRAY', 'Worker returned an arrayref');
+is(scalar @$results, 1, 'Correctly filtered to 1 result');
+is($results->[0]{name}, 'Alice', 'Data is correct');
+is($results->[0]{email}, 'alice@test.com', 'Email matches');
 
 done_testing();
