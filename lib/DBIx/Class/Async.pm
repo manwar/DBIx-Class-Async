@@ -75,7 +75,6 @@ sub all {
     my ($db, $payload) = @_;
     warn "[PID $$] STAGE 2 (Parent): Bridge - sending 'all' to worker";
 
-    # This uses your working _call_worker logic
     return _call_worker($db, 'all', $payload);
 }
 

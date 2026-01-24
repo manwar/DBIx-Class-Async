@@ -103,20 +103,49 @@ sub count {
 sub all {
     my ($self) = @_;
 
-    my $db = $self->{_async_db};
+    # 1. Return cached objects if we already have them
+    return Future->done($self->{_rows}) if $self->{_rows};
 
-    $db->{_stats}{_queries}++;
+    # 2. Handle Prefetched/Manual entries (The "Pass-through" logic)
+    if ($self->{_is_prefetched} && $self->{_entries}) {
+        $self->{_rows} = [
+            map {
+                (ref($_) && $_->isa('DBIx::Class::Async::Row'))
+                ? $_
+                : $self->new_result($_, { in_storage => 1 })
+            } @{$self->{_entries}}
+        ];
+        return Future->done($self->{_rows});
+    }
 
-    my $payload = {
+    # 3. Standard Async Fetch (The Bridge + Inflation)
+    # Increment stats here since we are actually hitting the wire
+    $self->{_async_db}{_stats}{_queries}++;
+    warn "[PID $$] STAGE 1 (Parent): Dispatching all() via all_future";
+
+    return $self->all_future->then(sub {
+        my ($rows) = @_;
+
+        $self->{_rows} = $rows; # Cache the Hijacked Objects
+        $self->{_pos}  = 0;     # Reset iterator position
+
+        return Future->done($self->{_rows});
+    });
+}
+
+sub all_future {
+    my $self = shift;
+    my $db   = $self->{_async_db};
+
+    return DBIx::Class::Async::all($db, {
         source_name => $self->{_source_name},
         cond        => $self->{_cond},
         attrs       => $self->{_attrs},
-    };
-
-    warn "[PID $$] STAGE 1 (Parent): Dispatching all()";
-
-    # Call the bridge function in Async.pm
-    return DBIx::Class::Async::all($db, $payload);
+    })->then(sub {
+        my $rows_data = shift;
+        my @objects   = map { $self->new_result($_, { in_storage => 1 }) } @$rows_data;
+        return Future->done(\@objects);
+    });
 }
 
 sub new_result {
@@ -124,12 +153,10 @@ sub new_result {
     return undef unless defined $data;
 
     my $storage_hint = (ref $attrs eq 'HASH') ? $attrs->{in_storage} : undef;
-    my $db = $self->{_async_db}; # This is our plain hashref
+    my $db = $self->{_async_db};
     my $result_source = $self->result_source;
 
     # 1. Row Construction
-    # Since $db is a hashref, we can't call methods on it.
-    # We build the Async::Row directly using the keys in the hash.
     my $row = DBIx::Class::Async::Row->new(
         schema        => $self->{_schema},   # The actual schema object
         async_db      => $db,                # The plain hashref itself
@@ -139,20 +166,17 @@ sub new_result {
         in_storage    => $storage_hint // 0,
     );
 
-    # 2. Dynamic Class Hijacking (The "Hijack" Logic)
-    # We keep your exact logic for mixing the Async::Row with the Result Class
-    my $target_class = $self->{_result_class} || $self->result_source->result_class;
+    # 2. Dynamic Class Hijacking
+    my $target_class   = $self->{_result_class} || $self->result_source->result_class;
     my $base_row_class = ref($row);
 
     if ($target_class ne $base_row_class) {
-        # Create a unique name for the hijacked class
         my $anon_class = "DBIx::Class::Async::Anon::" . ($base_row_class . "_" . $target_class) =~ s/::/_/gr;
 
         no strict 'refs';
         unless (@{"${anon_class}::ISA"}) {
             # Ensure the target result class is loaded
             eval "require $target_class" unless $target_class->can('new');
-            # Async::Row methods must come first in @ISA to intercept update/delete
             @{"${anon_class}::ISA"} = ($base_row_class, $target_class);
         }
         bless $row, $anon_class;
@@ -175,7 +199,6 @@ sub _get_source {
 sub search {
     my ($self, $cond, $attrs) = @_;
 
-    # --- 1. Condition Merging Logic (The "Brain") ---
     my $new_cond;
 
     # If the new condition is a literal (Scalar/Ref), it overrides everything
@@ -198,17 +221,15 @@ sub search {
         $new_cond = $cond || $self->{_cond};
     }
 
-    # --- 2. Attribute Merging ---
     my $merged_attrs = { %{$self->{_attrs} || {}}, %{$attrs || {}} };
 
-    # --- 3. Return New ResultSet Object ---
     # We return a clone of the current object but with the updated "State"
     return $self->new_result_set({
         source_name   => $self->{_source_name},
         cond          => $new_cond,
         attrs         => $merged_attrs,
         result_class  => $attrs->{result_class} // $self->{_result_class},
-        rows          => $merged_attrs->{rows}   // undef,
+        rows          => $merged_attrs->{rows}  // undef,
         pos           => 0,
         pager         => undef,
         entries       => undef,
@@ -241,6 +262,42 @@ sub as_query {
                          ->search($self->{_cond}, $self->{_attrs});
 
     return $real_rs->as_query;
+}
+
+sub next {
+    my $self = shift;
+
+    # 1. Check if the buffer already exists
+    if ($self->{_rows}) {
+        $self->{_pos} //= 0;
+
+        # End of buffer reached
+        if ($self->{_pos} >= @{$self->{_rows}}) {
+            return Future->done(undef);
+        }
+
+        my $data = $self->{_rows}[$self->{_pos}++];
+
+        # Inflate if it's raw data, otherwise return as is
+        my $row = (ref($data) eq 'HASH')
+            ? $self->new_result($data, { in_storage => 1 })
+            : $data;
+
+        return Future->done($row);
+    }
+
+    # 2. Buffer empty: Trigger 'all'
+    return $self->all->then(sub {
+        my $rows = shift;
+
+        if (!$rows || !@$rows) {
+            return Future->done(undef);
+        }
+
+        $self->{_pos} //= 0;
+
+        return Future->done($self->{_rows}[$self->{_pos}++]);
+    });
 }
 
 1; # End of DBIx::Class::Async::ResultSet
