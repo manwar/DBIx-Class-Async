@@ -71,6 +71,12 @@ sub _call_worker {
     return $future;
 }
 
+sub delete {
+    my ($db, $payload) = @_;
+    warn "[PID $$] Bridge - sending 'delete' to worker";
+    return _call_worker($db, 'delete', $payload);
+}
+
 sub create {
     my ($db, $payload) = @_;
     warn "[PID $$] STAGE 2 (Parent): Bridge - sending 'create' to worker";
@@ -422,6 +428,13 @@ sub _init_workers {
                         # IMPORTANT: Return the inflated columns so the Parent gets
                         # the Auto-Increment ID and any DB-side defaults.
                         $result = { $row->get_inflated_columns };
+                    }
+                    elsif ($operation eq 'delete') {
+                        my $source_name = $payload->{source_name};
+                        my $cond        = $payload->{cond};
+
+                        # Direct delete on the resultset matching the condition
+                        $result = $schema->resultset($source_name)->search($cond)->delete + 0;
                     }
                     else {
                         die "Unknown operation: $operation";

@@ -86,6 +86,70 @@ sub _build_payload {
     };
 }
 
+sub delete {
+    my $self = shift;
+
+    # If we have complex attributes (LIMIT, OFFSET, JOINs),
+    # we MUST use the safe path.
+    if ( keys %{$self->{_attrs} || {}} ) {
+        return $self->delete_all;
+    }
+
+    # Path A: Simple, direct DELETE if condition is a clean HASH
+    if ( ref($self->{_cond}) eq 'HASH' && keys %{$self->{_cond}} ) {
+        return DBIx::Class::Async::delete(
+            $self->{_async_db}, {
+                source_name => $self->{_source_name},
+                cond        => $self->{_cond}
+            }
+        );
+    }
+
+    # Default to the safe path for everything else
+    return $self->delete_all;
+}
+
+sub delete_all {
+    my $self = shift;
+
+    # Step 1: Use our working 'all' method to get the targets
+    return $self->all->then(sub {
+        my $rows = shift;
+
+        return Future->done(0) unless $rows && @$rows;
+
+        # Step 2: Identify Primary Keys
+        my @pks   = $self->result_source->primary_columns;
+        my $count = scalar @$rows;
+        my $condition;
+
+        if (scalar @pks == 1) {
+            my $pk_col = $pks[0];
+            my @ids    = map { $_->get_column($pk_col) } @$rows;
+            $condition = { $pk_col => { -in => \@ids } };
+        }
+        else {
+            # Handle Composite Keys
+            $condition = { -or => [
+                map {
+                    my $row = $_;
+                    { map { $_ => $row->get_column($_) } @pks }
+                } @$rows
+            ]};
+        }
+
+        # Step 3: Send the targeted delete to the worker
+        return DBIx::Class::Async::delete(
+            $self->{_async_db}, {
+                source_name => $self->{_source_name},
+                cond        => $condition
+            }
+        )->then(sub {
+            return Future->done($count);
+        });
+    });
+}
+
 sub create {
     my ($self, $data) = @_;
 
@@ -175,6 +239,17 @@ sub count {
 
     # This returns a Future that will be resolved by the worker
     return DBIx::Class::Async::count($db, $payload);
+}
+
+sub count_future {
+    my $self = shift;
+    my $db   = $self->{_async_db};
+
+    return DBIx::Class::Async::count($db, {
+        source_name => $self->{_source_name},
+        cond        => $self->{_cond},
+        attrs       => $self->{_attrs},
+    });
 }
 
 sub all {
