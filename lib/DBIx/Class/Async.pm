@@ -413,10 +413,13 @@ sub _init_workers {
                         my $cond        = $payload->{cond};
                         my $updates     = $payload->{updates};
 
-                        $result = $schema->resultset($source_name)
-                                         ->search($cond)
-                                         ->update($updates);
-                        # Usually returns the number of rows affected
+                        if (!$updates || !keys %$updates) {
+                            $result = 0;
+                        } else {
+                            $result = $schema->resultset($source_name)
+                                             ->search($cond)
+                                             ->update($updates);
+                        }
                     }
                     elsif ($operation eq 'create') {
                         my $source_name = $payload->{source_name};

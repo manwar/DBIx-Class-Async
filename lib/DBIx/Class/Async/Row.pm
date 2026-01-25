@@ -525,8 +525,8 @@ sub update {
 sub update_or_insert {
     my ($self, $data) = @_;
 
-    my $async_db    = $self->{async_db};
-    my $source_name = $self->{source_name};
+    my $async_db    = $self->{_async_db};
+    my $source_name = $self->{_source_name};
     my $source      = $self->result_source;
     my ($pk_col)    = $source->primary_columns;
 
@@ -647,26 +647,39 @@ sub update_or_insert {
                 "logic_error");
         }
 
-        return $async_db->update($source_name, $id_val, \%to_save)
-                        ->then(sub {
-                            my $res = shift;
-                            # We must catch the error before it gets 'inflated' into a Row
-                            if (blessed($res) && $res->isa('DBIx::Class::Exception')) {
-                                my $error_text = "$res";
-                                return Future->fail($error_text, 'db_error');
-                            }
-                            return $on_success->($res);
-                          });
+        return DBIx::Class::Async::update(
+            $self->{_async_db},
+            {
+                source_name => $source_name,
+                cond        => { $pk_col => $id_val },
+                updates     => \%to_save
+            })->then(sub {
+                my $res = shift;
+                # Handle worker exceptions
+                if (blessed($res) && $res->isa('DBIx::Class::Exception')) {
+                    return Future->fail("$res", 'db_error');
+                }
+                return $on_success->($res);
+            });
     } else {
-        return $async_db->create($source_name, \%to_save)
-                        ->then(sub {
-                            my $res = shift;
-                            if (blessed($res) && $res->isa('DBIx::Class::Exception')) {
-                                my $error_text = "$res";
-                                return Future->fail($error_text, 'db_error');
-                            }
-                            return $on_success->($res);
-                          });
+        return DBIx::Class::Async::create(
+            $self->{_async_db},
+            {
+                source_name => $source_name,
+                data        => \%to_save
+            }
+            )->then(sub {
+                my $res = shift;
+
+                # 1. Catch Exception objects from the Worker
+                if (blessed($res) && $res->isa('DBIx::Class::Exception')) {
+                    return Future->fail("$res", 'db_error');
+                }
+
+                # 2. Hand off to your excellent on_success handler
+                # This will set in_storage(1) and clear dirty flags.
+                return $on_success->($res);
+            });
     }
 }
 
