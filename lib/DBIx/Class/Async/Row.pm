@@ -147,46 +147,60 @@ sub delete {
     });
 }
 
+sub _spawn_rs {
+    my ($self) = @_;
+
+    # Ensure we have the required components to talk to the DB
+    die "Cannot spawn ResultSet: missing _schema or _source_name"
+        unless $self->{_schema} && $self->{_source_name};
+
+    return DBIx::Class::Async::ResultSet->new(
+        schema      => $self->{_schema},
+        async_db    => $self->{_async_db},
+        source_name => $self->{_source_name},
+        cond        => $self->ident_condition,
+    );
+}
 
 sub discard_changes {
     my $self = shift;
 
-    # Get primary key
-    my @pk = $self->_get_source->primary_columns;
+    # 1. Primary Key Validation (Matching your old design)
+    my $source = $self->{_schema}->resultset($self->{_source_name})->result_source;
+    my @pk = $source->primary_columns;
 
     croak("Cannot discard changes on row without primary key") unless @pk;
     croak("Composite primary keys not yet supported") if @pk > 1;
 
     my $pk_col = $pk[0];
-    my $id = $self->get_column($pk_col);
+    my $id = $self->{_data}{$pk_col}; # Using new internal _data structure
 
     croak("Cannot discard changes: primary key value is undefined")
         unless defined $id;
 
-    # Fetch fresh data from database
-    return $self->{async_db}->find($self->{source_name}, $id)->then(sub {
-        my ($fresh_data) = @_;
+    # 2. Fetch fresh data using the new re-anchored design
+    # We use find($id) which returns a Future containing a new Row object
+    return $self->_spawn_rs->find($id)->then(sub {
+        my ($fresh_row) = @_;
 
-        if (my $error = $self->_check_response($fresh_data)) {
-            return Future->fail($error, 'db_error');
+        # In the new design, find() returns undef or a Row object
+        unless ($fresh_row) {
+            return Future->fail("Row vanished from database", 'db_error');
         }
 
-        # Extract the raw data from the fresh data
-        my $raw_data = (ref($fresh_data) && $fresh_data->can('get_columns'))
-                            ? { $fresh_data->get_columns }
-                            : $fresh_data;
+        # 3. Synchronize internal state
+        # We extract the columns from the fresh object into this one
+        my $raw_data = $fresh_row->{_data};
 
-        # If it's an arrayref (sometimes returned by search/find), take first
-        $raw_data = $raw_data->[0] if ref($raw_data) eq 'ARRAY';
-
-        # Update our data
-        $self->{_data} = $raw_data;
+        $self->{_data}  = { %$raw_data };
         $self->{_dirty} = {};
+
+        # 4. Refresh speed shadows (Warm-up optimization)
+        $self->_ensure_accessors;
 
         return Future->done($self);
     });
 }
-
 
 sub get_column {
     my ($self, $col) = @_;
