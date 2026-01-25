@@ -111,34 +111,39 @@ sub create_related {
     return $self->related_resultset($rel_name)->create($col_data);
 }
 
-
 sub delete {
     my ($self) = @_;
 
-    # If already deleted (not in storage), return false immediately
     unless ($self->in_storage) {
         return Future->done(0);
     }
 
-    my $pk_info = $self->_get_primary_key_info;
-    my $pk      = $pk_info->{columns}[0];
-    my $id      = $self->get_column($pk);
+    # 1. Handle Single or Composite Primary Keys
+    my @pk_cols = $self->{_result_source}->primary_columns;
+    my %cond;
 
-    croak "Cannot delete row without a primary key"
-        unless defined $id;
+    foreach my $col (@pk_cols) {
+        my $val = $self->get_column($col);
+        croak "Cannot delete row: Primary key column '$col' is undefined"
+            unless defined $val;
+        $cond{$col} = $val;
+    }
 
-    return $self->{async_db}->delete($self->{source_name}, $id)->then(sub {
-        my ($result) = @_;
-
-        if (my $error = $self->_check_response($result)) {
-            return Future->fail($error, 'db_error');
+    # 2. Use the Bridge (Ensure you use the key names the Worker expects)
+    return DBIx::Class::Async::delete(
+        $self->{_async_db},
+        {
+            source_name => $self->{_source_name},
+            cond        => \%cond
         }
+    )->then(sub {
+        my $rows_affected = shift;
 
-        # Mark as not in storage
+        # 3. Mark as no longer in DB
         $self->{_in_storage} = 0;
 
-        # Return the success value (1 or 0), not $self
-        return Future->done(1);
+        # Return 1 for success (standard DBIC behavior)
+        return Future->done($rows_affected + 0);
     });
 }
 
