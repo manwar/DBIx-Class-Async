@@ -86,9 +86,9 @@ sub all {
     if ($self->{_is_prefetched} && $self->{_entries}) {
         $self->{_rows} = [
             map {
-                (ref($_) && $_->isa('DBIx::Class::Async::Row'))
+                (ref($_) && $_->isa('DBIx::Class::Row')) # Standard DBIC row check
                 ? $_
-                : $self->new_result($_, { in_storage => 1 })
+                : $self->_inflate_row($_)
             } @{$self->{_entries}}
         ];
         return Future->done($self->{_rows});
@@ -117,9 +117,8 @@ sub all_future {
             return Future->done([]);
         }
 
-        my @objects = map {
-            $self->new_result($_, { in_storage => 1 })
-        } @$rows_data;
+        # Use the helper to ensure nested relations are inflated
+        my @objects = map { $self->_inflate_row($_) } @$rows_data;
 
         return Future->done(\@objects);
     });
@@ -548,6 +547,11 @@ sub update_or_create {
 
 ############################################################################
 
+sub prefetch {
+    my ($self, $prefetch) = @_;
+    return $self->search(undef, { prefetch => $prefetch });
+}
+
 sub populate {
     my ($self, $data) = @_;
     return $self->_do_populate('populate', $data);
@@ -932,6 +936,27 @@ sub _build_payload {
         cond        => $merged_cond,
         attrs       => $merged_attrs,
     };
+}
+
+sub _inflate_row {
+    my ($self, $hash) = @_;
+    return undef unless $hash;
+
+    # 1. Create the base row object
+    # DBIC handles the columns defined in the ResultSource
+    my $row = $self->new_result($hash);
+    $row->in_storage(1);
+
+    # 2. Inject Relationship Data
+    # This is the "secret sauce" for prefetch to work in the parent
+    for my $rel ($self->result_source->relationships) {
+        if (exists $hash->{$rel}) {
+            # We place the nested data directly into DBIC's internal cache
+            $row->{_relationship_data}{$rel} = $hash->{$rel};
+        }
+    }
+
+    return $row;
 }
 
 1; # End of DBIx::Class::Async::ResultSet

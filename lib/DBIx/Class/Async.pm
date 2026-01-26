@@ -407,34 +407,20 @@ sub _init_workers {
                             warn "[PID $$] $operation complete: $result";
                         }
                     }
-                    elsif ($operation eq 'search') {
-                        warn "[PID $$] STAGE 6 (Worker): Performing search";
-
+                    elsif ($operation eq 'search' || $operation eq 'all') {
                         my $source_name = $payload->{source_name};
-                        my $cond        = $payload->{cond}  || {};
                         my $attrs       = $payload->{attrs} || {};
-                        my $rs = $schema->resultset($source_name)->search($cond, $attrs);
 
-                        # Execute and flatten to simple data (no objects!)
-                        $rs->result_class($attrs->{result_class} || 'DBIx::Class::ResultClass::HashRefInflator');
+                        # Force collapse so DBIC merges the JOINed rows into nested objects
+                        $attrs->{collapse} = 1 if $attrs->{prefetch};
 
+                        my $rs = $schema->resultset($source_name)->search($payload->{cond}, $attrs);
                         my @rows = $rs->all;
-                        $result  = \@rows;
-                    }
-                    elsif ($operation eq 'all') {
-                        warn "[PID $$] STAGE 6 (Worker): Performing 'all' (search)";
 
-                        my $source_name = $payload->{source_name};
-                        my $cond        = $payload->{cond};
-                        my $attrs       = $payload->{attrs};
-
-                        my $rs = $schema->resultset($source_name)->search($cond, $attrs);
-
-                        # Execute and flatten to simple data (no objects!)
-                        $rs->result_class($attrs->{result_class} || 'DBIx::Class::ResultClass::HashRefInflator');
-
-                        my @rows = $rs->all;
-                        $result  = \@rows;
+                        # Use your proven old-design logic here
+                        $result = [
+                            map { _serialise_row_with_prefetch($_, $attrs->{prefetch}, {}) } @rows
+                        ];
                     }
                     elsif ($operation eq 'update') {
                         my $source_name = $payload->{source_name};
@@ -458,7 +444,7 @@ sub _init_workers {
 
                         # IMPORTANT: Return the inflated columns so the Parent gets
                         # the Auto-Increment ID and any DB-side defaults.
-                        $result = { $row->get_inflated_columns };
+                        $result = _serialise_row_with_prefetch($row, undef, {});
                     }
                     elsif ($operation eq 'delete') {
                         my $source_name = $payload->{source_name};
@@ -478,7 +464,7 @@ sub _init_workers {
                                 # Standard populate can return objects.
                                 # We inflate them to HashRefs to pass back.
                                 my @rows = $rs->populate($data);
-                                return [ map { { $_->get_inflated_columns } } @rows ];
+                                return [ map { _serialise_row_with_prefetch($_, undef, {}) } @rows ];
                             }
                             else {
                                 # populate_bulk is for speed; typically returns a count or truthy
@@ -539,5 +525,52 @@ sub _build_default_cache {
     return CHI->new(%params);
 }
 
+sub _normalise_prefetch {
+    my $pref = shift;
+    return {} unless $pref;
+    return { $pref => undef } unless ref $pref;
+    if (ref $pref eq 'ARRAY') {
+        return { map { %{ _normalise_prefetch($_) } } @$pref };
+    }
+    if (ref $pref eq 'HASH') {
+        return $pref; # Already a spec
+    }
+    return {};
+}
+
+sub _serialise_row_with_prefetch {
+    my ($row, $prefetch) = @_;
+    return unless $row;
+
+    # 1. Base columns
+    my %data = $row->get_columns;
+
+    # 2. Process Prefetches using the normalized spec
+    if ($prefetch) {
+        my $spec = _normalise_prefetch($prefetch);
+
+        foreach my $rel (keys %$spec) {
+            # Check if the row can actually perform this relationship
+            if ($row->can($rel)) {
+                # This is the "poke": calling the accessor $row->$rel
+                # If prefetched, DBIC returns the data from memory.
+                my $related = eval { $row->$rel };
+                next if $@ || !defined $related;
+
+                if (ref($related) eq 'DBIx::Class::ResultSet' || eval { $related->isa('DBIx::Class::ResultSet') }) {
+                    # has_many: recurse into the collection
+                    my @items = $related->all;
+                    $data{$rel} = [
+                        map { _serialise_row_with_prefetch($_, $spec->{$rel}) } @items
+                    ];
+                } elsif (eval { $related->isa('DBIx::Class::Row') }) {
+                    # single: recurse into the row
+                    $data{$rel} = _serialise_row_with_prefetch($related, $spec->{$rel});
+                }
+            }
+        }
+    }
+    return \%data;
+}
 
 1; # End of DBIx::Class::Async
