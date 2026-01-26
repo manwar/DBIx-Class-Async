@@ -14,6 +14,7 @@ use DBIx::Class::Async::ResultSet;
 use DBIx::Class::Async::Storage::DBI;
 use Data::Dumper;
 
+our $METRICS;
 
 sub connect {
     my ($class, @args) = @_;
@@ -69,6 +70,56 @@ sub connect {
     return $self;
 }
 
+sub _record_metric {
+    my ($self, $type, $name, @args) = @_;
+
+    # 1. Check if metrics are enabled via the async_db state
+    # 2. Ensure the global $METRICS object exists
+    return unless $self->{_async_db}
+               && $self->{_async_db}{_enable_metrics}
+               && defined $METRICS;
+
+    # 3. Handle different metric types (parity with old design)
+    if ($type eq 'inc') {
+        # Usage: $schema->_record_metric('inc', 'query_count', 1)
+        $METRICS->inc($name, @args);
+    }
+    elsif ($type eq 'observe') {
+        # Usage: $schema->_record_metric('observe', 'query_duration', 0.05)
+        $METRICS->observe($name, @args);
+    }
+    elsif ($type eq 'set') {
+        # Usage: $schema->_record_metric('set', 'worker_pool_size', 5)
+        $METRICS->set($name, @args);
+    }
+
+    return;
+}
+
+sub _resolve_source {
+    my ($self, $source_name) = @_;
+
+    my $schema_class = $self->{_async_db}{_schema_class};
+
+    # 1. Ask the main DBIC Schema class for the source metadata
+    # We call this on the class name, not an instance, to stay "light"
+    my $source = eval { $schema_class->source($source_name) };
+
+    if ($@ || !$source) {
+        croak "Could not resolve source '$source_name' in $schema_class: $@";
+    }
+
+    # 2. Extract only what we need for the Async side
+    return {
+        result_class => $source->result_class,
+        columns      => [ $source->columns ],
+        relationships => {
+            # We map relationships to know how to handle joins/prefetch later
+            map { $_ => $source->relationship_info($_) } $source->relationships
+        },
+    };
+}
+
 sub storage {
     my $self = shift;
     return $self->{_storage};
@@ -77,30 +128,57 @@ sub storage {
 sub resultset {
     my ($self, $source_name) = @_;
 
-    croak "resultset() requires a source name" unless $source_name;
+    # 1. Check our cache for the source metadata
+    # (In DBIC, a 'source' contains column info, class names, etc.)
+    my $source = $self->{_sources_cache}{$source_name};
 
+    unless ($source) {
+        # Fetch metadata from the real DBIx::Class::Schema class
+        $source = $self->_resolve_source($source_name);
+        $self->{_sources_cache}{$source_name} = $source;
+    }
+
+    # 2. Create the new Async ResultSet
     return DBIx::Class::Async::ResultSet->new(
-        schema          => $self->{_async_db}->{_schema_class},
-        schema_instance => $self,
-        async_db        => $self->{_async_db},
         source_name     => $source_name,
+        schema_instance => $self,              # Access to _record_metric
+        async_db        => $self->{_async_db}, # Access to _call_worker
+        result_class    => $source->{result_class} || 'DBIx::Class::Core',
     );
 }
 
 sub source {
     my ($self, $source_name) = @_;
 
-    unless (exists $self->{_sources_cache}{$source_name}) {
-        my $schema_class = $self->{_async_db}->{_schema_class};
-        my $connect_info = $self->{_async_db}->{_connect_info};
-        my $temp_schema  = $schema_class->connect(@{$connect_info});
-        $self->{_sources_cache}{$source_name} = $temp_schema->source($source_name);
-        $temp_schema->storage->disconnect;
+    # 1. Retrieve the cached entry
+    my $cached = $self->{_sources_cache}{$source_name};
+
+    # 2. Check if we need to (re)fetch:
+    #    Either we have no entry, or it's a raw HASH (autovivification artifact)
+    if (!$cached || !blessed($cached)) {
+
+        # Clean up any "ghost" hash before re-fetching
+        delete $self->{_sources_cache}{$source_name};
+
+        # 3. Use the persistent provider to keep ResultSource objects alive
+        $self->{_metadata_provider} ||= do {
+            my $class = $self->{_async_db}->{_schema_class};
+            eval "require $class" or die "Could not load schema class $class: $@";
+            $class->connect(@{$self->{_async_db}->{_connect_info}});
+        };
+
+        # 4. Fetch the source and validate its blessing
+        my $source_obj = eval { $self->{_metadata_provider}->source($source_name) };
+
+        if (blessed($source_obj)) {
+            $self->{_sources_cache}{$source_name} = $source_obj;
+        } else {
+            return undef;
+        }
     }
 
-    return $self->{sources_cache}{$source_name};
+    return $self->{_sources_cache}{$source_name};
 }
-
 
 sub sources {
     my $self = shift;

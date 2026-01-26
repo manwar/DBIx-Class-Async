@@ -67,6 +67,14 @@ sub _call_worker {
         ],
     );
 
+    $future->on_done(sub {
+        $db->{_stats}->{_queries}++;
+    });
+
+    $future->on_fail(sub {
+        $db->{_stats}->{_errors}++;
+    });
+
     warn "Returning future: ", ref($future);
     return $future;
 }
@@ -102,7 +110,6 @@ sub count {
     my ($db, $payload) = @_;
 
     warn "[PID $$] STAGE 2 (Parent): Bridge - sending 'count' to worker";
-    $db->{_stats}{_queries}++;
 
     # Call worker and return the Future directly
     my $future = _call_worker($db, 'count', $payload);

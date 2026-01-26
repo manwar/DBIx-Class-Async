@@ -17,76 +17,61 @@ sub new {
     my ($class, %args) = @_;
 
     # 1. Validation
-    croak "Missing required argument: schema"      unless $args{schema};
-    croak "Missing required argument: async_db"    unless $args{async_db};
-    croak "Missing required argument: source_name" unless $args{source_name};
+    croak "Missing required argument: schema_instance" unless $args{schema_instance};
+    croak "Missing required argument: source_name"     unless $args{source_name};
 
-    # 2. Internal blessing
+    # 2. Blessing the unified state
     return bless {
-        _schema          => $args{schema},
+        # Core Infrastructure
         _schema_instance => $args{schema_instance},
-        _async_db        => $args{async_db},
+        _async_db        => $args{async_db} // $args{_schema_instance}->{_async_db},
+
+        # Source Metadata
         _source_name     => $args{source_name},
-        _result_class    => $args{result_class},
-        _source          => undef,
-        _cond            => $args{cond}  || {},
-        _attrs           => $args{attrs} || {},
-        _rows            => undef,
-        _pos             => 0,
-        _pager           => $args{pager} || undef,
-        _entries         => $args{entries}       || undef,
-        _is_prefetched   => $args{is_prefetched} || 0,
-     }, $class;
+        _result_class    => $args{result_class} // 'DBIx::Class::Core',
+
+        # Query State
+        _cond            => $args{cond}  // {},
+        _attrs           => $args{attrs} // {},
+
+        # Result State (Usually reset on clone)
+        _rows            => $args{rows} // undef,
+        _pos             => $args{pos}  // 0,
+
+        # Prefetch/Pager logic
+        _is_prefetched   => $args{is_prefetched} // 0,
+        _pager           => $args{pager},
+    }, $class;
 }
 
 sub new_result_set {
-    my ($self, $args) = @_;
+    my ($self, $overrides) = @_;
 
-    my $class = ref $self;
+    my %args;
+    foreach my $internal_key (keys %$self) {
+        # 1. Only process keys starting with an underscore
+        next unless $internal_key =~ /^_/;
 
-    # Inherit from parent if not provided in args
-    my $new_obj = {
-        _async_db        => $args->{async_db}        // $self->{_async_db},
-        _source_name     => $args->{source_name}     // $self->{_source_name},
-        _schema          => $args->{schema}          // $self->{_schema},
-        _schema_instance => $args->{schema_instance} // $self->{_schema_instance},
-        _result_class    => $args->{result_class}    // $self->{_result_class},
-        _cond            => $args->{cond}            // {},
-        _attrs           => $args->{attrs}           // {},
-        _rows            => undef,
-        _pos             => $args->{pos}             // 0,
-        _pager           => $args->{pager},
-        _entries         => $args->{entries},
-        _is_prefetched   => $args->{is_prefetched}   // 0,
-    };
+        # 2. Strip leading underscore for the "clean" argument name
+        my $clean_key = $internal_key;
+        $clean_key =~ s/^_//;
 
-    return bless $new_obj, $class;
-}
-
-sub _build_payload {
-    my ($self, $cond, $attrs) = @_;
-
-    # 1. Base Merge
-    my $merged_cond  = { %{ $self->{_cond}  || {} }, %{ $cond  || {} } };
-    my $merged_attrs = { %{ $self->{_attrs} || {} }, %{ $attrs || {} } };
-
-    # 2. The "Slice" Special Case
-    # DBIC requires subquery wrappers for counts on results with limits/offsets
-    if ( $merged_attrs->{rows} || $merged_attrs->{offset} || $merged_attrs->{limit} ) {
-        $merged_attrs->{alias}       //= 'subquery_for_count';
-        $merged_attrs->{is_subquery} //= 1;
+        $args{$clean_key} = $self->{$internal_key};
     }
 
-    # 3. Future Special Cases (Reserved)
-    # This is where you'd handle things like custom 'join' logic
-    # or ensuring 'order_by' is stripped for simple counts to save CPU.
+    $args{async_db}        = $self->{_async_db};
+    $args{schema_instance} = $self->{_schema_instance};
 
-    return {
-        source_name => $self->{_source_name},
-        cond        => $merged_cond,
-        attrs       => $merged_attrs,
-    };
+    # 3. Apply overrides
+    if ($overrides) {
+        @args{keys %$overrides} = values %$overrides;
+    }
+
+    # 4. Call new() with a flat list (%args)
+    return (ref $self)->new(%args);
 }
+
+############################################################################
 
 sub cursor {
     my $self = shift;
@@ -98,6 +83,8 @@ sub schema {
     my $self = shift;
     return $self->{_schema};
 }
+
+############################################################################
 
 sub delete {
     my $self = shift;
@@ -163,6 +150,8 @@ sub delete_all {
     });
 }
 
+############################################################################
+
 sub create {
     my ($self, $data) = @_;
 
@@ -188,6 +177,8 @@ sub create {
         return Future->done($self->new_result($db_data, { in_storage => 1 }));
     });
 }
+
+############################################################################
 
 sub update {
     my ($self, $data) = @_;
@@ -305,6 +296,8 @@ sub update_or_create {
     });
 }
 
+############################################################################
+
 sub page {
     my ($self, $page_number) = @_;
 
@@ -357,6 +350,400 @@ sub is_paged {
     return (exists $self->{_attrs}->{page} && defined $self->{_attrs}->{page}) ? 1 : 0;
 }
 
+############################################################################
+
+sub count {
+    my ($self, $cond, $attrs) = @_;
+
+    my $db = $self->{_async_db};
+
+    my $payload = $self->_build_payload($cond, $attrs);
+
+    warn "[PID $$] STAGE 1 (Parent): Dispatching count";
+
+    # This returns a Future that will be resolved by the worker
+    return DBIx::Class::Async::count($db, $payload);
+}
+
+sub count_future {
+    my $self = shift;
+    my $db   = $self->{_async_db};
+
+    return DBIx::Class::Async::count($db, {
+        source_name => $self->{_source_name},
+        cond        => $self->{_cond},
+        attrs       => $self->{_attrs},
+    });
+}
+
+sub count_literal {
+    my ($self, $sql_fragment, @bind) = @_;
+
+    # 1. search_literal() creates a NEW ResultSet instance.
+    # 2. Because we fixed search_literal/new_result_set, this new RS
+    #    already shares the same _async_db and _schema_instance.
+    # 3. We then chain the count() call which returns the Future.
+
+    return $self->search_literal($sql_fragment, @bind)->count;
+}
+
+sub count_rs {
+    my ($self, $cond, $attrs) = @_;
+
+    # By calling $self->search, we guarantee the new RS
+    # inherits the pinned _async_db and _schema_instance.
+    return $self->search($cond, {
+        %{ $attrs || {} },
+        select => [ { count => '*' } ],
+        as     => [ 'count' ],
+    });
+}
+
+sub count_total {
+    my ($self, $cond, $attrs) = @_;
+
+    # 1. Merge incoming parameters with existing ResultSet state
+    my %merged_cond  = ( %{ $self->{_cond}  || {} }, %{ $cond  || {} } );
+    my %merged_attrs = ( %{ $self->{_attrs} || {} }, %{ $attrs || {} } );
+
+    # 2. Strip slicing/ordering attributes to get the absolute total
+    delete @merged_attrs{qw(rows offset page order_by)};
+
+    # 3. Use the static call exactly like your other count() implementations
+    return DBIx::Class::Async::count($self->{_async_db}, {
+        source_name => $self->{_source_name},
+        cond        => \%merged_cond,
+        attrs       => \%merged_attrs,
+    });
+}
+
+############################################################################
+
+sub all {
+    my ($self) = @_;
+
+    # 1. Return cached objects if we already have them
+    if ($self->{_rows} && ref($self->{_rows}) eq 'ARRAY') {
+        return Future->done($self->{_rows});
+    }
+
+    # 2. Handle Prefetched/Manual entries
+    if ($self->{_is_prefetched} && $self->{_entries}) {
+        $self->{_rows} = [
+            map {
+                (ref($_) && $_->isa('DBIx::Class::Async::Row'))
+                ? $_
+                : $self->new_result($_, { in_storage => 1 })
+            } @{$self->{_entries}}
+        ];
+        return Future->done($self->{_rows});
+    }
+
+    # 3. Standard Async Fetch
+    return $self->all_future->then(sub {
+        my ($rows) = @_;
+        $self->{_rows} = $rows;
+        $self->{_pos}  = 0;
+        return Future->done($rows);
+    });
+}
+
+sub all_future {
+    my $self = shift;
+
+    return DBIx::Class::Async::all($self->{_async_db}, {
+        source_name => $self->{_source_name},
+        cond        => $self->{_cond},
+        attrs       => $self->{_attrs},
+    })->then(sub {
+        my $rows_data = shift;
+
+        if (!ref($rows_data) || ref($rows_data) ne 'ARRAY') {
+            return Future->done([]);
+        }
+
+        my @objects = map {
+            $self->new_result($_, { in_storage => 1 })
+        } @$rows_data;
+
+        return Future->done(\@objects);
+    });
+}
+
+############################################################################
+
+sub new_result {
+    my ($self, $data, $attrs) = @_;
+    return undef unless defined $data;
+
+    my $storage_hint = (ref $attrs eq 'HASH') ? $attrs->{in_storage} : undef;
+
+    # Use the standardized internal keys
+    my $db = $self->{_async_db};
+    my $schema_instance = $self->{_schema_instance};
+
+    # 1. Row Construction
+    # Note: We pass clean keys (no underscores) to match your Row constructor rule
+    my $row = DBIx::Class::Async::Row->new(
+        schema_instance => $schema_instance,
+        async_db        => $db,
+        source_name     => $self->{_source_name},
+        row_data        => $data,
+        in_storage      => $storage_hint // 0,
+    );
+
+    # 2. Dynamic Class Hijacking (Preserved logic)
+    my $target_class   = $self->{_result_class};
+    my $base_row_class = ref($row);
+
+    if ($target_class && $target_class ne $base_row_class) {
+        # Create a unique name for the hybrid class
+        my $anon_class = "DBIx::Class::Async::Anon::" . ($base_row_class . "_" . $target_class) =~ s/::/_/gr;
+
+        no strict 'refs';
+        unless (@{"${anon_class}::ISA"}) {
+            eval "require $target_class" unless $target_class->can('new');
+            # Multi-inheritance: Async capabilities + Result class methods
+            @{"${anon_class}::ISA"} = ($base_row_class, $target_class);
+        }
+        bless $row, $anon_class;
+
+        # Re-run accessor installation for the new hijacked class
+        $row->_ensure_accessors;
+    }
+
+    return $row;
+}
+
+sub result_source {
+    my $self = shift;
+    return $self->_get_source;
+}
+
+sub _get_source {
+    my $self = shift;
+
+    $self->{_source} ||= $self->{_schema_instance}->source($self->{_source_name});
+
+    return $self->{_source};
+}
+
+############################################################################
+
+sub search {
+    my ($self, $cond, $attrs) = @_;
+
+    my $new_cond;
+
+    if (ref $cond eq 'REF' || ref $cond eq 'SCALAR') {
+        $new_cond = $cond;
+    }
+    elsif (ref $cond eq 'HASH') {
+        if (ref $self->{_cond} eq 'HASH' && keys %{$self->{_cond}}) {
+            $new_cond = { -and => [ $self->{_cond}, $cond ] };
+        }
+        else {
+            $new_cond = $cond;
+        }
+    }
+    else {
+        $new_cond = $cond || $self->{_cond};
+    }
+
+    my $merged_attrs = { %{$self->{_attrs} || {}}, %{$attrs || {}} };
+
+    return $self->new_result_set({
+        cond            => $new_cond,
+        attrs           => $merged_attrs,
+        #async_db        => $self->{_async_db},
+        #schema_instance => $self->{_schema_instance},
+        pos           => 0,
+        pager         => undef,
+        entries       => undef,
+        is_prefetched => 0,
+    });
+}
+
+sub search_literal {
+    my ($self, $sql_fragment, @bind) = @_;
+
+    # By passing it to $self->search, we guarantee:
+    # 1. The new ResultSet gets the pinned _async_db and _schema_instance.
+    # 2. Any existing 'where' or 'attrs' (like rows/order_by) are merged.
+    return $self->search(
+        \[ $sql_fragment, @bind ]
+    );
+}
+
+sub search_rs {
+    my $self = shift;
+    return $self->search(@_);
+}
+
+sub search_related {
+    my ($self, $rel_name, $cond, $attrs) = @_;
+
+    # Use the helper to get the new configuration
+    my $new_rs = $self->search_related_rs($rel_name, $cond, $attrs);
+
+    # In an async context, search_related usually implies
+    # wanting the ResultSet object to call ->all_future on later.
+    return $new_rs;
+}
+
+sub search_related_rs {
+    my ($self, $rel_name, $cond, $attrs) = @_;
+
+    # 1. Get the source. If _source is undef, pull it from the schema
+    my $source = $self->{_result_source}
+              || $self->{_schema_instance}->resultset($self->{_source_name})->result_source;
+
+    # 2. Create the Shadow RS
+    require DBIx::Class::ResultSet;
+    my $shadow_rs = DBIx::Class::ResultSet->new($source, {
+        cond  => $self->can('ident_condition') ? { $self->ident_condition } : $self->{_cond},
+        attrs => $self->{_attrs} || {},
+    });
+
+    # 3. Pivot
+    my $related_shadow = $shadow_rs->search_related($rel_name, $cond, $attrs);
+
+    # 4. Wrap with ALL required keys for your constructor
+    return DBIx::Class::Async::ResultSet->new(
+        schema_instance => $self->{_schema_instance},
+        async_db    => $self->{_async_db},
+        source_name => $related_shadow->result_source->source_name,
+        cond        => $related_shadow->{cond},
+        attrs       => $related_shadow->{attrs},
+    );
+}
+
+############################################################################
+
+sub find {
+    my ($self, $id_or_cond) = @_;
+
+    # 1. Immediate return for undef
+    return Future->done(undef) unless defined $id_or_cond;
+
+    # 2. Build condition
+    my $cond = ref($id_or_cond) eq 'HASH' ? $id_or_cond : { id => $id_or_cond };
+
+    # 3. Create a new ResultSet state with the condition
+    # search() uses our generic new_result_set() translator
+    my $rs = $self->search($cond);
+
+    # 4. Delegate execution to single()
+    return $rs->single;
+}
+
+############################################################################
+
+sub single {
+    my ($self) = @_;
+
+    my $single_rs = $self->new_result_set({
+        attrs => { %{ $self->{_attrs} || {} }, rows => 1 }
+    });
+
+    return $single_rs->next;
+}
+
+############################################################################
+
+sub as_query {
+    my $self = shift;
+
+    my $bridge       = $self->{_async_db};
+    my $schema_class = $bridge->{_schema_class};
+
+    unless ($schema_class->can('resultset')) {
+        eval "require $schema_class" or die "as_query: $@";
+    }
+
+    # Silence the "Generic Driver" warnings for the duration of this method
+    local $SIG{__WARN__} = sub {
+        warn @_ unless $_[0] =~ /undetermined_driver|sql_limit_dialect|GenericSubQ/
+    };
+
+    unless ($bridge->{_metadata_schema}) {
+        $bridge->{_metadata_schema} = $schema_class->connect('dbi:NullP:');
+    }
+
+    # SQL is generated lazily; warnings often trigger here or at as_query()
+    my $real_rs = $bridge->{_metadata_schema}
+                         ->resultset($self->{_source_name})
+                         ->search($self->{_cond}, $self->{_attrs});
+
+    return $real_rs->as_query;
+}
+
+############################################################################
+
+sub next {
+    my $self = shift;
+
+    # 1. Check if the buffer already exists (Memory Hit)
+    if ($self->{_rows}) {
+        $self->{_pos} //= 0;
+
+        if ($self->{_pos} >= @{$self->{_rows}}) {
+            return Future->done(undef);
+        }
+
+        my $data = $self->{_rows}[$self->{_pos}++];
+
+        # Inflate if it's raw data
+        my $row = (ref($data) eq 'HASH')
+            ? $self->new_result($data, { in_storage => 1 })
+            : $data;
+
+        return Future->done($row);
+    }
+
+    # 2. Buffer empty: Trigger 'all' (Database Hit)
+    return $self->all->then(sub {
+        # $self->all already inflated the rows into $self->{_rows}
+        # and returns an arrayref of objects.
+        my $rows = shift;
+
+        if (!$rows || !@$rows) {
+            return Future->done(undef);
+        }
+
+        # Reset position and return the first inflated result
+        $self->{_pos} = 0;
+        my $row = $self->{_rows}[$self->{_pos}++];
+
+        # CRITICAL FIX: Wrap the result in a Future
+        return Future->done($row);
+    });
+}
+
+############################################################################
+
+sub stats {
+    my ($self, $key) = @_;
+
+    # Return the whole stats hash if no key is provided
+    return $self->{_async_db}->{_stats} unless $key;
+
+    # Otherwise return the specific metric (e.g., 'queries')
+    # Note: We map the public 'queries' to the internal '_queries'
+    my $internal_key = $key =~ /^_/ ? $key : "_$key";
+    return $self->{_async_db}->{_stats}->{$internal_key};
+}
+
+sub reset_stats {
+    my $self = shift;
+    foreach my $key (keys %{ $self->{_async_db}->{_stats} }) {
+        $self->{_async_db}->{_stats}->{$key} = 0;
+    }
+    return $self;
+}
+
+############################################################################
+
 sub _extract_unique_lookup {
     my ($self, $data, $attrs) = @_;
 
@@ -391,325 +778,38 @@ sub _extract_unique_lookup {
     return keys %lookup ? \%lookup : $data;
 }
 
-sub count {
+sub _build_payload {
     my ($self, $cond, $attrs) = @_;
 
-    my $db = $self->{_async_db};
-    $db->{_stats}{_queries}++;
+    # 1. Base Merge with Total Literal Awareness
+    my $merged_cond;
 
-    my $payload = $self->_build_payload($cond, $attrs);
-
-    warn "[PID $$] STAGE 1 (Parent): Dispatching count";
-
-    # This returns a Future that will be resolved by the worker
-    return DBIx::Class::Async::count($db, $payload);
-}
-
-sub count_future {
-    my $self = shift;
-    my $db   = $self->{_async_db};
-
-    return DBIx::Class::Async::count($db, {
-        source_name => $self->{_source_name},
-        cond        => $self->{_cond},
-        attrs       => $self->{_attrs},
-    });
-}
-
-sub count_total {
-    my ($self, $cond, $attrs) = @_;
-
-    # 1. Merge incoming parameters with existing ResultSet state
-    my %merged_cond  = ( %{ $self->{_cond}  || {} }, %{ $cond  || {} } );
-    my %merged_attrs = ( %{ $self->{_attrs} || {} }, %{ $attrs || {} } );
-
-    # 2. Strip slicing/ordering attributes to get the absolute total
-    delete @merged_attrs{qw(rows offset page order_by)};
-
-    # 3. Use the static call exactly like your other count() implementations
-    # $self->{async_db} is the $db handle passed as the first arg
-    return DBIx::Class::Async::count($self->{_async_db}, {
-        source_name => $self->{_source_name},
-        cond        => \%merged_cond,
-        attrs       => \%merged_attrs,
-    });
-}
-
-sub all {
-    my ($self) = @_;
-
-    # 1. Return cached objects if we already have them
-    if ($self->{_rows} && ref($self->{_rows}) eq 'ARRAY') {
-        return Future->done($self->{_rows});
+    # If either the CURRENT condition or the NEW condition is a literal,
+    # we generally can't merge them as hashes.
+    if (ref($self->{_cond}) eq 'REF' || ref($self->{_cond}) eq 'SCALAR') {
+        $merged_cond = $self->{_cond}; # Prioritize existing literal
     }
-
-    # 2. Handle Prefetched/Manual entries (The "Pass-through" logic)
-    if ($self->{_is_prefetched} && $self->{_entries}) {
-        $self->{_rows} = [
-            map {
-                (ref($_) && $_->isa('DBIx::Class::Async::Row'))
-                ? $_
-                : $self->new_result($_, { in_storage => 1 })
-            } @{$self->{_entries}}
-        ];
-        return Future->done($self->{_rows});
-    }
-
-    # 3. Standard Async Fetch (The Bridge + Inflation)
-    # Increment stats here since we are actually hitting the wire
-    $self->{_async_db}{_stats}{_queries}++;
-    warn "[PID $$] STAGE 1 (Parent): Dispatching all() via all_future";
-
-    return $self->all_future->then(sub {
-        my ($rows) = @_;
-
-        $self->{_rows} = $rows; # Cache the Hijacked Objects
-        $self->{_pos}  = 0;     # Reset iterator position
-
-        return Future->done($rows);
-    });
-}
-
-sub all_future {
-    my $self = shift;
-    my $db   = $self->{_async_db};
-
-    return DBIx::Class::Async::all($db, {
-        source_name => $self->{_source_name},
-        cond        => $self->{_cond},
-        attrs       => $self->{_attrs},
-    })->then(sub {
-        my $rows_data = shift;
-
-        if (!ref($rows_data) || ref($rows_data) ne 'ARRAY') {
-            warn "[PID $$] Bridge error: expected ARRAYREF, got: " . ($rows_data // 'undef');
-            return Future->done([]); # Return empty to avoid crash
-        }
-
-        my @objects   = map { $self->new_result($_, { in_storage => 1 }) } @$rows_data;
-        return Future->done(\@objects);
-    });
-}
-
-sub new_result {
-    my ($self, $data, $attrs) = @_;
-    return undef unless defined $data;
-
-    my $storage_hint = (ref $attrs eq 'HASH') ? $attrs->{in_storage} : undef;
-    my $db = $self->{_async_db};
-    my $result_source = $self->result_source;
-
-    # 1. Row Construction
-    my $row = DBIx::Class::Async::Row->new(
-        schema        => $self->{_schema},   # The actual schema object
-        async_db      => $db,                # The plain hashref itself
-        source_name   => $self->{_source_name},
-        result_source => $result_source,
-        row_data      => $data,
-        in_storage    => $storage_hint // 0,
-    );
-
-    # 2. Dynamic Class Hijacking
-    my $target_class   = $self->{_result_class} || $self->result_source->result_class;
-    my $base_row_class = ref($row);
-
-    if ($target_class ne $base_row_class) {
-        my $anon_class = "DBIx::Class::Async::Anon::" . ($base_row_class . "_" . $target_class) =~ s/::/_/gr;
-
-        no strict 'refs';
-        unless (@{"${anon_class}::ISA"}) {
-            # Ensure the target result class is loaded
-            eval "require $target_class" unless $target_class->can('new');
-            @{"${anon_class}::ISA"} = ($base_row_class, $target_class);
-        }
-        bless $row, $anon_class;
-    }
-
-    return $row;
-}
-
-sub result_source {
-    my $self = shift;
-    return $self->_get_source;
-}
-
-sub _get_source {
-    my $self = shift;
-    $self->{_source} ||= $self->{_schema}->source($self->{_source_name});
-    return $self->{_source};
-}
-
-sub search {
-    my ($self, $cond, $attrs) = @_;
-
-    my $new_cond;
-
-    # If the new condition is a literal (Scalar/Ref), it overrides everything
-    if (ref $cond eq 'REF' || ref $cond eq 'SCALAR') {
-        $new_cond = $cond;
-    }
-    # If the new condition is a Hash, merge it with existing conditions
-    elsif (ref $cond eq 'HASH') {
-        if (ref $self->{_cond} eq 'HASH' && keys %{$self->{_cond}}) {
-            # Use -and to combine the current state with the new criteria
-            $new_cond = { -and => [ $self->{_cond}, $cond ] };
-        }
-        else {
-            # If current condition is empty, just use the new one
-            $new_cond = $cond;
-        }
+    elsif (ref($cond) eq 'REF' || ref($cond) eq 'SCALAR') {
+        $merged_cond = $cond;          # Prioritize new literal
     }
     else {
-        # Fallback for simple cases (like passing undef)
-        $new_cond = $cond || $self->{_cond};
+        # Both are safe to treat as hashes (or undef)
+        $merged_cond = { %{ $self->{_cond} || {} }, %{ $cond || {} } };
     }
 
-    my $merged_attrs = { %{$self->{_attrs} || {}}, %{$attrs || {}} };
+    my $merged_attrs = { %{ $self->{_attrs} || {} }, %{ $attrs || {} } };
 
-    # We return a clone of the current object but with the updated "State"
-    return $self->new_result_set({
-        source_name   => $self->{_source_name},
-        cond          => $new_cond,
-        attrs         => $merged_attrs,
-        result_class  => $attrs->{result_class} // $self->{_result_class},
-        pos           => 0,
-        pager         => undef,
-        entries       => undef,
-        is_prefetched => 0,
-    });
-}
-
-sub search_rs {
-    my $self = shift;
-    return $self->search(@_);
-}
-
-sub search_related {
-    my ($self, $rel_name, $cond, $attrs) = @_;
-
-    # Use the helper to get the new configuration
-    my $new_rs = $self->search_related_rs($rel_name, $cond, $attrs);
-
-    # In an async context, search_related usually implies
-    # wanting the ResultSet object to call ->all_future on later.
-    return $new_rs;
-}
-
-sub search_related_rs {
-    my ($self, $rel_name, $cond, $attrs) = @_;
-
-    # 1. Get the source. If _source is undef, pull it from the schema
-    my $source = $self->{_source}
-              || $self->{_schema}->resultset($self->{_source_name})->result_source;
-
-    # 2. Create the Shadow RS
-    require DBIx::Class::ResultSet;
-    my $shadow_rs = DBIx::Class::ResultSet->new($source, {
-        cond  => $self->can('ident_condition') ? { $self->ident_condition } : $self->{_cond},
-        attrs => $self->{_attrs} || {},
-    });
-
-    # 3. Pivot
-    my $related_shadow = $shadow_rs->search_related($rel_name, $cond, $attrs);
-
-    # 4. Wrap with ALL required keys for your constructor
-    return DBIx::Class::Async::ResultSet->new(
-        schema      => $self->{_schema},
-        async_db    => $self->{_async_db},
-        source_name => $related_shadow->result_source->source_name,
-        cond        => $related_shadow->{cond},
-        attrs       => $related_shadow->{attrs},
-    );
-}
-
-sub find {
-    my ($self, $id_or_cond) = @_;
-
-    return Future->done(undef) unless defined $id_or_cond;
-
-    # If it's a HASH, use it directly.
-    # If it's a scalar, assume it's the Primary Key 'id'.
-    my $cond = ref($id_or_cond) eq 'HASH' ? $id_or_cond : { id => $id_or_cond };
-
-    warn "[PID $$] find() searching with: " . (ref $cond ? "HASH" : $cond);
-
-    my $rs = $self->search_rs($cond);
-    return $rs->single;
-}
-
-sub single {
-    my $self = shift;
-    warn "[PID $$] single() called, _rows=" . (defined $self->{_rows} ? ref($self->{_rows}) || 'SCALAR:' . $self->{_rows} : 'undef');
-
-    # We use search here to ensure we only ask the worker for 1 row
-    my $rs = $self->search(undef, { rows => 1 });
-    warn "[PID $$] single() created search with rows=1, _rows=" . (defined $rs->{_rows} ? ref($rs->{_rows}) || 'SCALAR:' . $rs->{_rows} : 'undef');
-
-    return $rs->next;
-}
-
-
-sub as_query {
-    my $self = shift;
-
-    my $bridge       = $self->{_async_db};
-    my $schema_class = $bridge->{_schema_class};
-
-    unless ($schema_class->can('resultset')) {
-        eval "require $schema_class" or die "as_query: $@";
+    # 2. The "Slice" Special Case (remains the same)
+    if ( $merged_attrs->{rows} || $merged_attrs->{offset} || $merged_attrs->{limit} ) {
+        $merged_attrs->{alias}       //= 'subquery_for_count';
+        $merged_attrs->{is_subquery} //= 1;
     }
 
-    # Silence the "Generic Driver" warnings for the duration of this method
-    local $SIG{__WARN__} = sub {
-        warn @_ unless $_[0] =~ /undetermined_driver|sql_limit_dialect|GenericSubQ/
+    return {
+        source_name => $self->{_source_name},
+        cond        => $merged_cond,
+        attrs       => $merged_attrs,
     };
-
-    unless ($bridge->{_metadata_schema}) {
-        $bridge->{_metadata_schema} = $schema_class->connect('dbi:NullP:');
-    }
-
-    # SQL is generated lazily; warnings often trigger here or at as_query()
-    my $real_rs = $bridge->{_metadata_schema}
-                         ->resultset($self->{_source_name})
-                         ->search($self->{_cond}, $self->{_attrs});
-
-    return $real_rs->as_query;
-}
-
-sub next {
-    my $self = shift;
-
-    # 1. Check if the buffer already exists
-    if ($self->{_rows}) {
-        $self->{_pos} //= 0;
-
-        # End of buffer reached
-        if ($self->{_pos} >= @{$self->{_rows}}) {
-            return Future->done(undef);
-        }
-
-        my $data = $self->{_rows}[$self->{_pos}++];
-
-        # Inflate if it's raw data, otherwise return as is
-        my $row = (ref($data) eq 'HASH')
-            ? $self->new_result($data, { in_storage => 1 })
-            : $data;
-
-        return Future->done($row);
-    }
-
-    # 2. Buffer empty: Trigger 'all'
-    return $self->all->then(sub {
-        my $rows = shift;
-
-        if (!$rows || !@$rows) {
-            return Future->done(undef);
-        }
-
-        $self->{_pos} //= 0;
-
-        return $self->{_rows}[$self->{_pos}++];
-    });
 }
 
 1; # End of DBIx::Class::Async::ResultSet

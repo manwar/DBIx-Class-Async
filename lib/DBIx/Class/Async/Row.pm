@@ -17,32 +17,32 @@ my $INTERNAL_KEYS = qr/^(?:_.*|async_db|source_name|schema|_inflation_map)$/;
 sub new {
     my ($class, %args) = @_;
 
-    croak "Missing required argument: schema"      unless $args{schema};
-    croak "Missing required argument: async_db"    unless $args{async_db};
-    croak "Missing required argument: source_name" unless $args{source_name};
-    croak "Missing required argument: row_data"    unless $args{row_data};
+    croak "Missing required argument: schema_instance" unless $args{schema_instance};
+    croak "Missing required argument: async_db"        unless $args{async_db};
+    croak "Missing required argument: source_name"     unless $args{source_name};
+    croak "Missing required argument: row_data"        unless $args{row_data};
 
     my $in_storage = delete $args{in_storage} // 0;
     my $data       = $args{row_data} || $args{_data} || {};
 
     my $self = bless {
-        _schema         => $args{schema},
-        _async_db       => $args{async_db},
-        _source_name    => $args{source_name},
-        _result_source  => $args{result_source} // undef,
-        _data           => { %$data },
-        _dirty          => {},
-        _inflated       => {},
-        _related        => {},
-        _in_storage     => $in_storage,
-        _inflation_map  => {},
+        _schema_instance => $args{schema_instance},
+        _async_db        => $args{async_db},
+        _source_name     => $args{source_name},
+        _result_source   => $args{result_source} // undef,
+        _data            => { %$data },
+        _dirty           => {},
+        _inflated        => {},
+        _related         => {},
+        _in_storage      => $in_storage,
+        _inflation_map   => {},
     }, $class;
 
     $self->_ensure_accessors;
 
     # WARM-UP: Pre-calculate metadata and shadow plain columns for speed
     my $source = $self->_get_source;
-    if ($source) {
+    if ($source && ref($source) && eval { $source->can('has_column') }) {
         foreach my $col (keys %$data) {
             # Skip internal plumbing
             next if $self->_is_internal($col);
@@ -150,15 +150,14 @@ sub delete {
 sub _spawn_rs {
     my ($self) = @_;
 
-    # Ensure we have the required components to talk to the DB
-    die "Cannot spawn ResultSet: missing _schema or _source_name"
-        unless $self->{_schema} && $self->{_source_name};
+    die "Cannot spawn ResultSet: missing _schema_instance or _source_name"
+        unless $self->{_schema_instance} && $self->{_source_name};
 
     return DBIx::Class::Async::ResultSet->new(
-        schema      => $self->{_schema},
-        async_db    => $self->{_async_db},
-        source_name => $self->{_source_name},
-        cond        => $self->ident_condition,
+        schema_instance => $self->{_schema_instance}, # Match ResultSet's new()
+        async_db        => $self->{_async_db},
+        source_name     => $self->{_source_name},
+        cond            => $self->ident_condition,
     );
 }
 
@@ -166,7 +165,7 @@ sub discard_changes {
     my $self = shift;
 
     # 1. Primary Key Validation (Matching your old design)
-    my $source = $self->{_schema}->resultset($self->{_source_name})->result_source;
+    my $source = $self->{_schema_instance}->resultset($self->{_source_name})->result_source;
     my @pk = $source->primary_columns;
 
     croak("Cannot discard changes on row without primary key") unless @pk;
@@ -280,7 +279,6 @@ sub get_dirty_columns {
     return wantarray ? %dirty_values : \%dirty_values;
 }
 
-
 sub get_inflated_columns {
     my $self = shift;
 
@@ -292,14 +290,20 @@ sub get_inflated_columns {
     return %inflated;
 }
 
-
 sub id {
     my $self = shift;
 
     croak("id() cannot be called as a class method")
         unless ref $self;
 
-    my @pk_columns = $self->_get_source->primary_columns;
+    my $source = $self->_get_source;
+    unless ($source && ref($source) && eval { $source->can('primary_columns') }) {
+        croak("Could not retrieve valid ResultSource for " .
+              ($self->{_source_name} // 'Unknown') .
+              ". Source is either missing or unblessed.");
+    }
+
+    my @pk_columns = $source->primary_columns;
 
     croak("No primary key defined for " . $self->{source_name})
         unless @pk_columns;
@@ -335,8 +339,14 @@ sub id {
 
 sub ident_condition {
     my $self = shift;
-    my @pks   = $self->result_source->primary_columns;
-    return map { $_ => $self->get_column($_) } @pks;
+    my $source = $self->{_result_source}
+               || $self->{_schema_instance}->resultset($self->{_source_name})->result_source;
+
+    my @pks = $source->primary_columns;
+    croak "ident_condition failed: No primary keys defined for " . $self->{_source_name} unless @pks;
+
+    # Return a HASHREF instead of a list to make it easier to use elsewhere
+    return { map { $_ => $self->{_data}{$_} } @pks };
 }
 
 sub insert {
@@ -443,11 +453,11 @@ sub related_resultset {
 
     # Return an Async ResultSet for the related source
     return DBIx::Class::Async::ResultSet->new(
-        schema      => $schema_class,
-        async_db    => $bridge,
-        source_name => $foreign_source,
-        cond        => $join_cond,
-        attrs       => $attrs || {},
+         schema_instance => $self->{_schema_instance}, # Pass the LIVE OBJECT
+         async_db        => $self->{_async_db},        # Pass the SHARED DB HANDLE
+         source_name     => $foreign_source,
+         cond            => $join_cond,
+         attrs           => $attrs || {},
     );
 }
 
@@ -943,11 +953,14 @@ Creates accessor methods for all columns in the result source.
 
 sub _ensure_accessors {
     my $self   = shift;
-    my $source = $self->_get_source or return;
+    my $source = $self->_get_source;
+
+    return unless blessed($source) && $source->can('can');
+
     my $class  = ref($self);
 
     return unless $class;
-    return if $class eq 'DBIx::Class::Async::Row';
+    #return if $class eq 'DBIx::Class::Async::Row';
 
     # 1. Handle Columns
     if ($source->can('columns')) {
@@ -1110,16 +1123,24 @@ Returns the result source for this row, loading it lazily if needed.
 sub _get_source {
     my $self = shift;
 
-    unless ($self->{_result_source}) {
-        if ($self->{_schema}
-            && ref $self->{_schema}
-            && $self->{_schema}->can('source')) {
-            $self->{_result_source} = eval { $self->{_schema}->source($self->{_source_name}) };
-            return $self->{_result_source} if $self->{_result_source};
-        }
+    # 1. Return cached source if already found
+    return $self->{_result_source} if $self->{_result_source};
+
+    my $schema = $self->{_schema_instance};
+    my $name   = $self->{_source_name};
+
+    # 2. Guard: if we don't have a schema or name, we can't proceed
+    return undef unless $schema && $name;
+
+    # 3. Attempt to fetch from the schema
+    my $source = eval { $schema->source($name) };
+
+    # 4. Final verification: Only cache if it's a real, blessed object
+    if ($source && blessed($source)) {
+        return $self->{_result_source} = $source;
     }
 
-    return $self->{_result_source};
+    return undef;
 }
 
 #
