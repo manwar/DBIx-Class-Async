@@ -467,6 +467,35 @@ sub _init_workers {
                         # Direct delete on the resultset matching the condition
                         $result = $schema->resultset($source_name)->search($cond)->delete + 0;
                     }
+                    elsif ($operation =~ /^populate(?:_bulk)?$/) {
+                        my $source_name = $payload->{source_name};
+                        my $data        = $payload->{data};
+
+                        my $val = eval {
+                            my $rs = $schema->resultset($source_name);
+
+                            if ($operation eq 'populate') {
+                                # Standard populate can return objects.
+                                # We inflate them to HashRefs to pass back.
+                                my @rows = $rs->populate($data);
+                                return [ map { { $_->get_inflated_columns } } @rows ];
+                            }
+                            else {
+                                # populate_bulk is for speed; typically returns a count or truthy
+                                $rs->populate($data); # DBIC void context usually
+                                return 1;
+                            }
+                        };
+
+                        if ($@) {
+                            warn "[PID $$] WORKER ERROR: $@";
+                            $result = { error => "$@" };
+                        }
+                        else {
+                            $result = $val;
+                        }
+                        return $result;
+                    }
                     else {
                         die "Unknown operation: $operation";
                     }

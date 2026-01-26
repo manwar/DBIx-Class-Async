@@ -548,6 +548,34 @@ sub update_or_create {
 
 ############################################################################
 
+sub populate {
+    my ($self, $data) = @_;
+    return $self->_do_populate('populate', $data);
+}
+
+sub populate_bulk {
+    my ($self, $data) = @_;
+    return $self->_do_populate('populate_bulk', $data);
+}
+
+sub _do_populate {
+    my ($self, $operation, $data) = @_;
+
+    croak("data required") unless defined $data;
+    croak("data must be an arrayref") unless ref $data eq 'ARRAY';
+    return Future->done([]) unless @$data;
+
+    # Reuse your existing bridge logic
+    my $payload = $self->_build_payload;
+    return DBIx::Class::Async::_call_worker(
+        $self->{_async_db},
+        $operation,
+        {
+            %$payload, data => $data,
+        }
+    );
+}
+
 sub page {
     my ($self, $page_number) = @_;
 
@@ -601,9 +629,6 @@ sub is_paged {
 }
 
 ############################################################################
-
-############################################################################
-
 
 sub new_result {
     my ($self, $data, $attrs) = @_;
