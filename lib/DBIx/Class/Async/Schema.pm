@@ -151,6 +151,32 @@ sub deploy {
     });
 }
 
+sub disconnect {
+    my $self = shift;
+
+    if (ref $self->{_async_db} eq 'HASH') {
+        # 1. Properly stop every worker in the array
+        if (my $workers = $self->{_async_db}->{_workers}) {
+            for my $worker (@$workers) {
+                if (blessed($worker) && $worker->can('stop')) {
+                    eval { $worker->stop };
+                }
+            }
+        }
+
+        # 2. Clear the internal hash contents to break any circular refs
+        %{$self->{_async_db}} = ();
+    }
+
+    # 3. Remove the manager entirely
+    delete $self->{_async_db};
+
+    # 4. Flush the metadata cache
+    $self->{_sources_cache} = {};
+
+    return $self;
+}
+
 ############################################################################
 
 sub inflate_column {
@@ -183,6 +209,22 @@ sub inflate_column {
 
     # Registry for Parent-side inflation of results coming back from Worker
     $self->{_async_db}{_custom_inflators}{$source_name}{$column} = $handlers;
+}
+
+############################################################################
+
+sub populate {
+    my ($self, $source_name, $data) = @_;
+
+    # 1. Standard Guard Clauses
+    croak("Schema is disconnected")   unless $self->{_async_db};
+    croak("source_name required")     unless defined $source_name;
+    croak("data required")            unless defined $data;
+    croak("data must be an arrayref") unless ref $data eq 'ARRAY';
+
+    # 2. Delegate to ResultSet
+    # This creates the RS and immediately triggers the bulk insert logic
+    return $self->resultset($source_name)->populate($data);
 }
 
 ############################################################################
