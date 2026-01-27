@@ -690,6 +690,12 @@ sub reset_stats {
     return $self;
 }
 
+sub reset {
+    my $self = shift;
+    $self->{_pos} = 0;
+    return $self;
+}
+
 ############################################################################
 
 sub search {
