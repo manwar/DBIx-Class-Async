@@ -840,12 +840,131 @@ sub next {
         }
 
         # Reset position and return the first inflated result
-        $self->{_pos} = 0;
+        $self->{_rows} = $rows;
+        $self->{_pos}  = 0;
         my $row = $self->{_rows}[$self->{_pos}++];
 
-        # CRITICAL FIX: Wrap the result in a Future
+        $row = $self->_inflate_row($row) if ref($row) eq 'HASH';
+
         return Future->done($row);
     });
+}
+
+############################################################################
+
+sub _find_reverse_relationship {
+    my ($self, $source, $rel_source, $forward_rel) = @_;
+
+    unless (ref $rel_source && $rel_source->can('relationships')) {
+        require Carp;
+        Carp::confess("Critical Error: _find_reverse_relationship expected a ResultSource object but got: " . ($rel_source // 'undef'));
+    }
+
+    my @rel_names    = $rel_source->relationships;
+    my $forward_info = $source->relationship_info($forward_rel);
+    my $forward_cond = $forward_info->{cond};
+
+    # 1. Extract keys from forward condition (e.g., 'foreign.user_id' => 'self.id')
+    my ($forward_foreign, $forward_self);
+    if (ref $forward_cond eq 'HASH') {
+        my ($f, $s) = %$forward_cond;
+        # Handle cases where value is a hash (like { -ident => 'id' })
+        $s = $s->{'-ident'} // $s if ref $s eq 'HASH';
+
+        $forward_foreign = $f =~ s/^foreign\.//r;
+        $forward_self    = $s =~ s/^self\.//r;
+    }
+
+    # 2. Look for a relationship that points back to our source with matching keys
+    foreach my $rev_rel (@rel_names) {
+        my $rev_info       = $rel_source->relationship_info($rev_rel);
+        my $rev_source_obj = $rel_source->related_source($rev_rel);
+
+        # Check if this relationship points back to our original source
+        next unless $rev_source_obj->source_name eq $source->source_name;
+
+        # Validate the foreign keys match (in reverse)
+        my $rev_cond = $rev_info->{cond};
+        if (ref $rev_cond eq 'HASH') {
+            my ($rev_foreign, $rev_self) = %$rev_cond;
+            $rev_self = $rev_self->{'-ident'} // $rev_self if ref $rev_self eq 'HASH';
+
+            my $rf_clean = $rev_foreign =~ s/^foreign\.//r;
+            my $rs_clean = $rev_self    =~ s/^self\.//r;
+
+            # The logic check:
+            # If Forward is: Order(user_id) -> User(id)
+            # Reverse must be: User(id) -> Order(user_id)
+            if ($rf_clean eq $forward_self && $rs_clean eq $forward_foreign) {
+                return $rev_rel;
+            }
+        }
+    }
+
+    # 3. Fallback: If we couldn't find it by key matching, try by source name only
+    foreach my $rev_rel (@rel_names) {
+        if ($rel_source->related_source($rev_rel)->source_name eq $source->source_name) {
+            return $rev_rel;
+        }
+    }
+
+    return undef;
+}
+
+sub related_resultset {
+    my ($self, $rel_name) = @_;
+
+    # 1. Get current source and schema link
+    my $source        = $self->result_source;
+    my $schema_inst   = $self->{_schema_instance};
+    my $native_schema = $schema_inst->{_native_schema};
+
+    # 2. Resolve relationship info
+    my $rel_info = $source->relationship_info($rel_name)
+        or die "No such relationship '$rel_name' on " . $source->source_name;
+
+    # 3. Determine the Target Moniker
+    # DBIC often returns full class names (TestSchema::Result::Order)
+    # but ->source() and ->resultset() want the moniker (Order)
+    my $target_moniker = $rel_info->{source};
+    $target_moniker =~ s/^.*::Result:://;
+
+    # 4. Resolve the target source object (for metadata/pivoting)
+    my $rel_source_obj = eval { $native_schema->source($target_moniker) }
+        || eval { $native_schema->source($rel_info->{source}) };
+
+    unless ($rel_source_obj) {
+        die "Could not resolve source for relationship '$rel_name' (target: $target_moniker)";
+    }
+
+    # 5. Find the reverse relationship (e.g., 'user') for the JOIN
+    my $reverse_rel = $self->_find_reverse_relationship($source, $rel_source_obj, $rel_name)
+        or die "Could not find reverse relationship for '$rel_name' to " . $source->source_name;
+
+    # 6. Prefix existing conditions (Pivot logic)
+    # Turns { age => 30 } into { 'user.age' => 30 }
+    my %new_cond;
+    if ($self->{_cond} && ref $self->{_cond} eq 'HASH') {
+        while (my ($key, $val) = each %{$self->{_cond}}) {
+            my $new_key = ($key =~ /\./) ? $key : "$reverse_rel.$key";
+            $new_cond{$new_key} = $val;
+        }
+    }
+
+    # 7. Build the new Async ResultSet using the MONIKER
+    # We call resultset('Order'), NOT resultset('orders')
+    return $schema_inst->resultset($target_moniker)->search(
+        \%new_cond,
+        { join => $reverse_rel }
+    );
+}
+
+sub reset_stats {
+    my $self = shift;
+    foreach my $key (keys %{ $self->{_async_db}->{_stats} }) {
+        $self->{_async_db}->{_stats}->{$key} = 0;
+    }
+    return $self;
 }
 
 ############################################################################
@@ -861,16 +980,6 @@ sub stats {
     my $internal_key = $key =~ /^_/ ? $key : "_$key";
     return $self->{_async_db}->{_stats}->{$internal_key};
 }
-
-sub reset_stats {
-    my $self = shift;
-    foreach my $key (keys %{ $self->{_async_db}->{_stats} }) {
-        $self->{_async_db}->{_stats}->{$key} = 0;
-    }
-    return $self;
-}
-
-############################################################################
 
 sub schema {
     my $self = shift;

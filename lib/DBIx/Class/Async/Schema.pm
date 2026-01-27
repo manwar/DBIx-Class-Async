@@ -55,8 +55,11 @@ sub connect {
         croak "Failed to create async engine: $@";
     }
 
+    my $native_schema = $schema_class->connect(@args);
+
     my $self = bless {
         _async_db      => $async_db,
+        _native_schema => $native_schema,
         _sources_cache => {},
     }, $class;
 
