@@ -45,6 +45,49 @@ sub new {
     }, $class;
 }
 
+sub new_result {
+    my ($self, $data, $attrs) = @_;
+    return undef unless defined $data;
+
+    my $storage_hint = (ref $attrs eq 'HASH') ? $attrs->{in_storage} : undef;
+
+    # Use the standardized internal keys
+    my $db = $self->{_async_db};
+    my $schema_instance = $self->{_schema_instance};
+
+    # 1. Row Construction
+    # Note: We pass clean keys (no underscores) to match your Row constructor rule
+    my $row = DBIx::Class::Async::Row->new(
+        schema_instance => $schema_instance,
+        async_db        => $db,
+        source_name     => $self->{_source_name},
+        row_data        => $data,
+        in_storage      => $storage_hint // 0,
+    );
+
+    # 2. Dynamic Class Hijacking (Preserved logic)
+    my $target_class   = $self->{_result_class};
+    my $base_row_class = ref($row);
+
+    if ($target_class && $target_class ne $base_row_class) {
+        # Create a unique name for the hybrid class
+        my $anon_class = "DBIx::Class::Async::Anon::" . ($base_row_class . "_" . $target_class) =~ s/::/_/gr;
+
+        no strict 'refs';
+        unless (@{"${anon_class}::ISA"}) {
+            eval "require $target_class" unless $target_class->can('new');
+            # Multi-inheritance: Async capabilities + Result class methods
+            @{"${anon_class}::ISA"} = ($base_row_class, $target_class);
+        }
+        bless $row, $anon_class;
+
+        # Re-run accessor installation for the new hijacked class
+        $row->_ensure_accessors;
+    }
+
+    return $row;
+}
+
 sub new_result_set {
     my ($self, $overrides) = @_;
 
@@ -445,6 +488,323 @@ sub get_column {
 
 ############################################################################
 
+sub is_ordered {
+    my $self = shift;
+    # Check if 'order_by' exists in the attributes hashref
+    return (exists $self->{_attrs}->{order_by} && defined $self->{_attrs}->{order_by}) ? 1 : 0;
+}
+
+sub is_paged {
+    my $self = shift;
+    return (exists $self->{_attrs}->{page} && defined $self->{_attrs}->{page}) ? 1 : 0;
+}
+
+############################################################################
+
+sub next {
+    my $self = shift;
+
+    # 1. Check if the buffer already exists (Memory Hit)
+    if ($self->{_rows}) {
+        $self->{_pos} //= 0;
+
+        if ($self->{_pos} >= @{$self->{_rows}}) {
+            return Future->done(undef);
+        }
+
+        my $data = $self->{_rows}[$self->{_pos}++];
+
+        # Inflate if it's raw data
+        my $row = (ref($data) eq 'HASH')
+            ? $self->_inflate_row($data)
+            : $data;
+
+        return Future->done($row);
+    }
+
+    # 2. Buffer empty: Trigger 'all' (Database Hit)
+    return $self->all->then(sub {
+        # $self->all already inflated the rows into $self->{_rows}
+        # and returns an arrayref of objects.
+        my $rows = shift;
+
+        if (!$rows || !@$rows) {
+            return Future->done(undef);
+        }
+
+        # Reset position and return the first inflated result
+        $self->{_rows} = $rows;
+        $self->{_pos}  = 0;
+        my $row = $self->{_rows}[$self->{_pos}++];
+
+        $row = $self->_inflate_row($row) if ref($row) eq 'HASH';
+
+        return Future->done($row);
+    });
+}
+
+############################################################################
+
+sub page {
+    my ($self, $page_number) = @_;
+
+    # 1. Ensure we have a valid page number (default to 1)
+    my $page = $page_number || 1;
+
+    # 2. Capture existing rows attribute from _attrs, or default to 10
+    # This matches your old design's requirement
+    my $rows = $self->{_attrs}->{rows} || 10;
+
+    # 3. Delegate to search() for cloning and state preservation
+    # This passes through your bridge validation logic
+    return $self->search(undef, {
+        page => $page,
+        rows => $rows,
+    });
+}
+
+sub pager {
+    my $self = shift;
+
+    # 1. Return cached pager if it exists
+    return $self->{_pager} if $self->{_pager};
+
+    # 2. Strict check for paging attributes
+    unless ($self->is_paged) {
+        die "Cannot call ->pager on a non-paged resultset. Call ->page(\$n) first.";
+    }
+
+    # 3. Warning for unordered results (crucial for consistent pagination)
+    # Checks if we are NOT in a test environment (HARNESS_ACTIVE)
+    if (!$self->is_ordered && !$ENV{HARNESS_ACTIVE}) {
+        warn "DBIx::Class::Async Warning: Calling ->pager on an unordered ResultSet. " .
+             "Results may be inconsistent across pages.\n";
+    }
+
+    # 4. Lazy-load and instantiate the Async Pager
+    require DBIx::Class::Async::ResultSet::Pager;
+    return $self->{_pager} = DBIx::Class::Async::ResultSet::Pager->new(resultset => $self);
+}
+
+sub populate {
+    my ($self, $data) = @_;
+    return $self->_do_populate('populate', $data);
+}
+
+sub populate_bulk {
+    my ($self, $data) = @_;
+    return $self->_do_populate('populate_bulk', $data);
+}
+
+sub _do_populate {
+    my ($self, $operation, $data) = @_;
+
+    croak("data required") unless defined $data;
+    croak("data must be an arrayref") unless ref $data eq 'ARRAY';
+    return Future->done([]) unless @$data;
+
+    # Reuse your existing bridge logic
+    my $payload = $self->_build_payload;
+    return DBIx::Class::Async::_call_worker(
+        $self->{_async_db},
+        $operation,
+        {
+            %$payload, data => $data,
+        }
+    );
+}
+
+sub prefetch {
+    my ($self, $prefetch) = @_;
+    return $self->search(undef, { prefetch => $prefetch });
+}
+
+############################################################################
+
+sub related_resultset {
+    my ($self, $rel_name) = @_;
+
+    # 1. Get current source and schema link
+    my $source        = $self->result_source;
+    my $schema_inst   = $self->{_schema_instance};
+    my $native_schema = $schema_inst->{_native_schema};
+
+    # 2. Resolve relationship info
+    my $rel_info = $source->relationship_info($rel_name)
+        or die "No such relationship '$rel_name' on " . $source->source_name;
+
+    # 3. Determine the Target Moniker
+    # DBIC often returns full class names (TestSchema::Result::Order)
+    # but ->source() and ->resultset() want the moniker (Order)
+    my $target_moniker = $rel_info->{source};
+    $target_moniker =~ s/^.*::Result:://;
+
+    # 4. Resolve the target source object (for metadata/pivoting)
+    my $rel_source_obj = eval { $native_schema->source($target_moniker) }
+        || eval { $native_schema->source($rel_info->{source}) };
+
+    unless ($rel_source_obj) {
+        die "Could not resolve source for relationship '$rel_name' (target: $target_moniker)";
+    }
+
+    # 5. Find the reverse relationship (e.g., 'user') for the JOIN
+    my $reverse_rel = $self->_find_reverse_relationship($source, $rel_source_obj, $rel_name)
+        or die "Could not find reverse relationship for '$rel_name' to " . $source->source_name;
+
+    # 6. Prefix existing conditions (Pivot logic)
+    # Turns { age => 30 } into { 'user.age' => 30 }
+    my %new_cond;
+    if ($self->{_cond} && ref $self->{_cond} eq 'HASH') {
+        while (my ($key, $val) = each %{$self->{_cond}}) {
+            my $new_key = ($key =~ /\./) ? $key : "$reverse_rel.$key";
+            $new_cond{$new_key} = $val;
+        }
+    }
+
+    # 7. Build the new Async ResultSet using the MONIKER
+    # We call resultset('Order'), NOT resultset('orders')
+    return $schema_inst->resultset($target_moniker)->search(
+        \%new_cond,
+        { join => $reverse_rel }
+    );
+}
+
+sub result_source {
+    my $self = shift;
+    return $self->_get_source;
+}
+
+sub _get_source {
+    my $self = shift;
+
+    $self->{_source} ||= $self->{_schema_instance}->source($self->{_source_name});
+
+    return $self->{_source};
+}
+
+sub reset_stats {
+    my $self = shift;
+    foreach my $key (keys %{ $self->{_async_db}->{_stats} }) {
+        $self->{_async_db}->{_stats}->{$key} = 0;
+    }
+    return $self;
+}
+
+############################################################################
+
+sub search {
+    my ($self, $cond, $attrs) = @_;
+
+    my $new_cond;
+
+    if (ref $cond eq 'REF' || ref $cond eq 'SCALAR') {
+        $new_cond = $cond;
+    }
+    elsif (ref $cond eq 'HASH') {
+        if (ref $self->{_cond} eq 'HASH' && keys %{$self->{_cond}}) {
+            $new_cond = { -and => [ $self->{_cond}, $cond ] };
+        }
+        else {
+            $new_cond = $cond;
+        }
+    }
+    else {
+        $new_cond = $cond || $self->{_cond};
+    }
+
+    my $merged_attrs = { %{$self->{_attrs} || {}}, %{$attrs || {}} };
+
+    return $self->new_result_set({
+        cond            => $new_cond,
+        attrs           => $merged_attrs,
+        #async_db        => $self->{_async_db},
+        #schema_instance => $self->{_schema_instance},
+        pos           => 0,
+        pager         => undef,
+        entries       => undef,
+        is_prefetched => 0,
+    });
+}
+
+sub search_literal {
+    my ($self, $sql_fragment, @bind) = @_;
+
+    # By passing it to $self->search, we guarantee:
+    # 1. The new ResultSet gets the pinned _async_db and _schema_instance.
+    # 2. Any existing 'where' or 'attrs' (like rows/order_by) are merged.
+    return $self->search(
+        \[ $sql_fragment, @bind ]
+    );
+}
+
+sub search_rs {
+    my $self = shift;
+    return $self->search(@_);
+}
+
+sub search_related {
+    my ($self, $rel_name, $cond, $attrs) = @_;
+
+    # Use the helper to get the new configuration
+    my $new_rs = $self->search_related_rs($rel_name, $cond, $attrs);
+
+    # In an async context, search_related usually implies
+    # wanting the ResultSet object to call ->all_future on later.
+    return $new_rs;
+}
+
+sub search_related_rs {
+    my ($self, $rel_name, $cond, $attrs) = @_;
+
+    # 1. Get the source. If _source is undef, pull it from the schema
+    my $source = $self->{_result_source}
+              || $self->{_schema_instance}->resultset($self->{_source_name})->result_source;
+
+    # 2. Create the Shadow RS
+    require DBIx::Class::ResultSet;
+    my $shadow_rs = DBIx::Class::ResultSet->new($source, {
+        cond  => $self->can('ident_condition') ? { $self->ident_condition } : $self->{_cond},
+        attrs => $self->{_attrs} || {},
+    });
+
+    # 3. Pivot
+    my $related_shadow = $shadow_rs->search_related($rel_name, $cond, $attrs);
+
+    # 4. Wrap with ALL required keys for your constructor
+    return DBIx::Class::Async::ResultSet->new(
+        schema_instance => $self->{_schema_instance},
+        async_db    => $self->{_async_db},
+        source_name => $related_shadow->result_source->source_name,
+        cond        => $related_shadow->{cond},
+        attrs       => $related_shadow->{attrs},
+    );
+}
+
+############################################################################
+
+sub single        { shift->first }
+
+sub single_future { shift->first }
+
+sub stats {
+    my ($self, $key) = @_;
+
+    # Return the whole stats hash if no key is provided
+    return $self->{_async_db}->{_stats} unless $key;
+
+    # Otherwise return the specific metric (e.g., 'queries')
+    # Note: We map the public 'queries' to the internal '_queries'
+    my $internal_key = $key =~ /^_/ ? $key : "_$key";
+    return $self->{_async_db}->{_stats}->{$internal_key};
+}
+
+sub schema {
+    my $self = shift;
+    return $self->{_schema};
+}
+
+############################################################################
+
 sub update {
     my ($self, $data) = @_;
 
@@ -563,295 +923,6 @@ sub update_or_create {
 
 ############################################################################
 
-sub prefetch {
-    my ($self, $prefetch) = @_;
-    return $self->search(undef, { prefetch => $prefetch });
-}
-
-sub populate {
-    my ($self, $data) = @_;
-    return $self->_do_populate('populate', $data);
-}
-
-sub populate_bulk {
-    my ($self, $data) = @_;
-    return $self->_do_populate('populate_bulk', $data);
-}
-
-sub _do_populate {
-    my ($self, $operation, $data) = @_;
-
-    croak("data required") unless defined $data;
-    croak("data must be an arrayref") unless ref $data eq 'ARRAY';
-    return Future->done([]) unless @$data;
-
-    # Reuse your existing bridge logic
-    my $payload = $self->_build_payload;
-    return DBIx::Class::Async::_call_worker(
-        $self->{_async_db},
-        $operation,
-        {
-            %$payload, data => $data,
-        }
-    );
-}
-
-sub page {
-    my ($self, $page_number) = @_;
-
-    # 1. Ensure we have a valid page number (default to 1)
-    my $page = $page_number || 1;
-
-    # 2. Capture existing rows attribute from _attrs, or default to 10
-    # This matches your old design's requirement
-    my $rows = $self->{_attrs}->{rows} || 10;
-
-    # 3. Delegate to search() for cloning and state preservation
-    # This passes through your bridge validation logic
-    return $self->search(undef, {
-        page => $page,
-        rows => $rows,
-    });
-}
-
-sub pager {
-    my $self = shift;
-
-    # 1. Return cached pager if it exists
-    return $self->{_pager} if $self->{_pager};
-
-    # 2. Strict check for paging attributes
-    unless ($self->is_paged) {
-        die "Cannot call ->pager on a non-paged resultset. Call ->page(\$n) first.";
-    }
-
-    # 3. Warning for unordered results (crucial for consistent pagination)
-    # Checks if we are NOT in a test environment (HARNESS_ACTIVE)
-    if (!$self->is_ordered && !$ENV{HARNESS_ACTIVE}) {
-        warn "DBIx::Class::Async Warning: Calling ->pager on an unordered ResultSet. " .
-             "Results may be inconsistent across pages.\n";
-    }
-
-    # 4. Lazy-load and instantiate the Async Pager
-    require DBIx::Class::Async::ResultSet::Pager;
-    return $self->{_pager} = DBIx::Class::Async::ResultSet::Pager->new(resultset => $self);
-}
-
-sub is_ordered {
-    my $self = shift;
-    # Check if 'order_by' exists in the attributes hashref
-    return (exists $self->{_attrs}->{order_by} && defined $self->{_attrs}->{order_by}) ? 1 : 0;
-}
-
-sub is_paged {
-    my $self = shift;
-    return (exists $self->{_attrs}->{page} && defined $self->{_attrs}->{page}) ? 1 : 0;
-}
-
-############################################################################
-
-sub new_result {
-    my ($self, $data, $attrs) = @_;
-    return undef unless defined $data;
-
-    my $storage_hint = (ref $attrs eq 'HASH') ? $attrs->{in_storage} : undef;
-
-    # Use the standardized internal keys
-    my $db = $self->{_async_db};
-    my $schema_instance = $self->{_schema_instance};
-
-    # 1. Row Construction
-    # Note: We pass clean keys (no underscores) to match your Row constructor rule
-    my $row = DBIx::Class::Async::Row->new(
-        schema_instance => $schema_instance,
-        async_db        => $db,
-        source_name     => $self->{_source_name},
-        row_data        => $data,
-        in_storage      => $storage_hint // 0,
-    );
-
-    # 2. Dynamic Class Hijacking (Preserved logic)
-    my $target_class   = $self->{_result_class};
-    my $base_row_class = ref($row);
-
-    if ($target_class && $target_class ne $base_row_class) {
-        # Create a unique name for the hybrid class
-        my $anon_class = "DBIx::Class::Async::Anon::" . ($base_row_class . "_" . $target_class) =~ s/::/_/gr;
-
-        no strict 'refs';
-        unless (@{"${anon_class}::ISA"}) {
-            eval "require $target_class" unless $target_class->can('new');
-            # Multi-inheritance: Async capabilities + Result class methods
-            @{"${anon_class}::ISA"} = ($base_row_class, $target_class);
-        }
-        bless $row, $anon_class;
-
-        # Re-run accessor installation for the new hijacked class
-        $row->_ensure_accessors;
-    }
-
-    return $row;
-}
-
-sub result_source {
-    my $self = shift;
-    return $self->_get_source;
-}
-
-sub _get_source {
-    my $self = shift;
-
-    $self->{_source} ||= $self->{_schema_instance}->source($self->{_source_name});
-
-    return $self->{_source};
-}
-
-############################################################################
-
-sub single        { shift->first }
-sub single_future { shift->first }
-
-sub search {
-    my ($self, $cond, $attrs) = @_;
-
-    my $new_cond;
-
-    if (ref $cond eq 'REF' || ref $cond eq 'SCALAR') {
-        $new_cond = $cond;
-    }
-    elsif (ref $cond eq 'HASH') {
-        if (ref $self->{_cond} eq 'HASH' && keys %{$self->{_cond}}) {
-            $new_cond = { -and => [ $self->{_cond}, $cond ] };
-        }
-        else {
-            $new_cond = $cond;
-        }
-    }
-    else {
-        $new_cond = $cond || $self->{_cond};
-    }
-
-    my $merged_attrs = { %{$self->{_attrs} || {}}, %{$attrs || {}} };
-
-    return $self->new_result_set({
-        cond            => $new_cond,
-        attrs           => $merged_attrs,
-        #async_db        => $self->{_async_db},
-        #schema_instance => $self->{_schema_instance},
-        pos           => 0,
-        pager         => undef,
-        entries       => undef,
-        is_prefetched => 0,
-    });
-}
-
-sub search_literal {
-    my ($self, $sql_fragment, @bind) = @_;
-
-    # By passing it to $self->search, we guarantee:
-    # 1. The new ResultSet gets the pinned _async_db and _schema_instance.
-    # 2. Any existing 'where' or 'attrs' (like rows/order_by) are merged.
-    return $self->search(
-        \[ $sql_fragment, @bind ]
-    );
-}
-
-sub search_rs {
-    my $self = shift;
-    return $self->search(@_);
-}
-
-sub search_related {
-    my ($self, $rel_name, $cond, $attrs) = @_;
-
-    # Use the helper to get the new configuration
-    my $new_rs = $self->search_related_rs($rel_name, $cond, $attrs);
-
-    # In an async context, search_related usually implies
-    # wanting the ResultSet object to call ->all_future on later.
-    return $new_rs;
-}
-
-sub search_related_rs {
-    my ($self, $rel_name, $cond, $attrs) = @_;
-
-    # 1. Get the source. If _source is undef, pull it from the schema
-    my $source = $self->{_result_source}
-              || $self->{_schema_instance}->resultset($self->{_source_name})->result_source;
-
-    # 2. Create the Shadow RS
-    require DBIx::Class::ResultSet;
-    my $shadow_rs = DBIx::Class::ResultSet->new($source, {
-        cond  => $self->can('ident_condition') ? { $self->ident_condition } : $self->{_cond},
-        attrs => $self->{_attrs} || {},
-    });
-
-    # 3. Pivot
-    my $related_shadow = $shadow_rs->search_related($rel_name, $cond, $attrs);
-
-    # 4. Wrap with ALL required keys for your constructor
-    return DBIx::Class::Async::ResultSet->new(
-        schema_instance => $self->{_schema_instance},
-        async_db    => $self->{_async_db},
-        source_name => $related_shadow->result_source->source_name,
-        cond        => $related_shadow->{cond},
-        attrs       => $related_shadow->{attrs},
-    );
-}
-
-############################################################################
-
-
-############################################################################
-
-############################################################################
-
-############################################################################
-
-sub next {
-    my $self = shift;
-
-    # 1. Check if the buffer already exists (Memory Hit)
-    if ($self->{_rows}) {
-        $self->{_pos} //= 0;
-
-        if ($self->{_pos} >= @{$self->{_rows}}) {
-            return Future->done(undef);
-        }
-
-        my $data = $self->{_rows}[$self->{_pos}++];
-
-        # Inflate if it's raw data
-        my $row = (ref($data) eq 'HASH')
-            ? $self->_inflate_row($data)
-            : $data;
-
-        return Future->done($row);
-    }
-
-    # 2. Buffer empty: Trigger 'all' (Database Hit)
-    return $self->all->then(sub {
-        # $self->all already inflated the rows into $self->{_rows}
-        # and returns an arrayref of objects.
-        my $rows = shift;
-
-        if (!$rows || !@$rows) {
-            return Future->done(undef);
-        }
-
-        # Reset position and return the first inflated result
-        $self->{_rows} = $rows;
-        $self->{_pos}  = 0;
-        my $row = $self->{_rows}[$self->{_pos}++];
-
-        $row = $self->_inflate_row($row) if ref($row) eq 'HASH';
-
-        return Future->done($row);
-    });
-}
-
-############################################################################
-
 sub _find_reverse_relationship {
     my ($self, $source, $rel_source, $forward_rel) = @_;
 
@@ -909,81 +980,6 @@ sub _find_reverse_relationship {
     }
 
     return undef;
-}
-
-sub related_resultset {
-    my ($self, $rel_name) = @_;
-
-    # 1. Get current source and schema link
-    my $source        = $self->result_source;
-    my $schema_inst   = $self->{_schema_instance};
-    my $native_schema = $schema_inst->{_native_schema};
-
-    # 2. Resolve relationship info
-    my $rel_info = $source->relationship_info($rel_name)
-        or die "No such relationship '$rel_name' on " . $source->source_name;
-
-    # 3. Determine the Target Moniker
-    # DBIC often returns full class names (TestSchema::Result::Order)
-    # but ->source() and ->resultset() want the moniker (Order)
-    my $target_moniker = $rel_info->{source};
-    $target_moniker =~ s/^.*::Result:://;
-
-    # 4. Resolve the target source object (for metadata/pivoting)
-    my $rel_source_obj = eval { $native_schema->source($target_moniker) }
-        || eval { $native_schema->source($rel_info->{source}) };
-
-    unless ($rel_source_obj) {
-        die "Could not resolve source for relationship '$rel_name' (target: $target_moniker)";
-    }
-
-    # 5. Find the reverse relationship (e.g., 'user') for the JOIN
-    my $reverse_rel = $self->_find_reverse_relationship($source, $rel_source_obj, $rel_name)
-        or die "Could not find reverse relationship for '$rel_name' to " . $source->source_name;
-
-    # 6. Prefix existing conditions (Pivot logic)
-    # Turns { age => 30 } into { 'user.age' => 30 }
-    my %new_cond;
-    if ($self->{_cond} && ref $self->{_cond} eq 'HASH') {
-        while (my ($key, $val) = each %{$self->{_cond}}) {
-            my $new_key = ($key =~ /\./) ? $key : "$reverse_rel.$key";
-            $new_cond{$new_key} = $val;
-        }
-    }
-
-    # 7. Build the new Async ResultSet using the MONIKER
-    # We call resultset('Order'), NOT resultset('orders')
-    return $schema_inst->resultset($target_moniker)->search(
-        \%new_cond,
-        { join => $reverse_rel }
-    );
-}
-
-sub reset_stats {
-    my $self = shift;
-    foreach my $key (keys %{ $self->{_async_db}->{_stats} }) {
-        $self->{_async_db}->{_stats}->{$key} = 0;
-    }
-    return $self;
-}
-
-############################################################################
-
-sub stats {
-    my ($self, $key) = @_;
-
-    # Return the whole stats hash if no key is provided
-    return $self->{_async_db}->{_stats} unless $key;
-
-    # Otherwise return the specific metric (e.g., 'queries')
-    # Note: We map the public 'queries' to the internal '_queries'
-    my $internal_key = $key =~ /^_/ ? $key : "_$key";
-    return $self->{_async_db}->{_stats}->{$internal_key};
-}
-
-sub schema {
-    my $self = shift;
-    return $self->{_schema};
 }
 
 ############################################################################
