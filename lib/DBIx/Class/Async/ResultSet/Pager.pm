@@ -82,6 +82,22 @@ sub new {
 
 =head1 METHODS
 
+=cut
+
+sub has_next {
+    my $self = shift;
+    # If next_page returns a number (2, 3, etc), this becomes true.
+    # If it returns undef, it stays false.
+    return $self->next_page ? 1 : 0;
+}
+
+sub has_previous {
+    my $self = shift;
+    return $self->previous_page ? 1 : 0;
+}
+
+
+
 =head2 total_entries
 
 Returns a L<Future> that resolves to the total number of entries matching the

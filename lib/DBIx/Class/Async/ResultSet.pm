@@ -780,6 +780,38 @@ sub search_related_rs {
     );
 }
 
+sub search_with_pager {
+    my ($self, $cond, $attrs) = @_;
+
+    # 1. Create the paged resultset
+    # This applies any search conditions and returns a new RS instance
+    my $paged_rs = $self->search($cond, $attrs);
+
+    # 2. Ensure paging is actually active
+    # If the user didn't provide 'rows' or 'page' in $attrs, we force page 1
+    if (!$paged_rs->is_paged) {
+        $paged_rs = $paged_rs->page(1);
+    }
+
+    # 3. Instantiate the Async Pager (using your existing method)
+    my $pager = $paged_rs->pager;
+
+    # 4. Fire parallel requests to the worker pool
+    # 'all' initiates the data fetch; 'total_entries' initiates the count(*)
+    my $data_f  = $paged_rs->all;
+    my $total_f = $pager->total_entries;
+
+    # 5. Return a combined Future
+    # This resolves only when BOTH the data and the count are back from workers
+    return Future->needs_all($data_f, $total_f)->then(sub {
+        my ($rows, $total) = @_;
+
+        # At this point, $pager->total_entries is already resolved internally
+        # so the user can immediately call $pager->last_page, etc.
+        return Future->done($rows, $pager);
+    });
+}
+
 sub single        { shift->first }
 
 sub single_future { shift->first }
