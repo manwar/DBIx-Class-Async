@@ -530,6 +530,114 @@ sub _init_workers {
                             $result = { success => 1 };
                         }
                     }
+                    elsif ($operation eq 'txn_batch') {
+                        my $operations = $payload;
+
+                        my $batch_result = eval {
+                            $schema->txn_do(sub {
+                                my $success_count = 0;
+                                foreach my $op (@$operations) {
+                                    my $type = $op->{type};
+                                    my $rs_name = $op->{resultset};
+
+                                    if ($type eq 'update') {
+                                        my $row = $schema->resultset($rs_name)->find($op->{id});
+                                        die "Record not found for update: $rs_name ID $op->{id}\n"
+                                            unless $row;
+                                        $row->update($op->{data});
+                                        $success_count++;
+                                    }
+                                    elsif ($type eq 'create') {
+                                        $schema->resultset($rs_name)->create($op->{data});
+                                        $success_count++;
+                                    }
+                                    elsif ($type eq 'delete') {
+                                        my $row = $schema->resultset($rs_name)->find($op->{id});
+                                        die "Record not found for delete: $rs_name ID $op->{id}\n"
+                                            unless $row;
+                                        $row->delete;
+                                        $success_count++;
+                                    }
+                                    elsif ($type eq 'raw') {
+                                        $schema->storage->dbh->do($op->{sql}, undef, @{$op->{bind} || []});
+                                        $success_count++;
+                                    }
+                                    else {
+                                        die "Unknown operation type: $type\n";
+                                    }
+                                }
+                                return { count => $success_count, success => 1 };
+                            });
+                        };
+
+                        if ($@) {
+                            $result = { error => "Batch Transaction Aborted: $@", success => 0 };
+                        }
+                        else {
+                            $result = $batch_result;
+                        }
+                    }
+                    elsif ($operation eq 'txn_do') {
+                        my $steps = $payload;
+                        my %register;
+
+                        my $txn_result = eval {
+                            $schema->txn_do(sub {
+                                my @step_results;
+
+                                foreach my $step (@$steps) {
+                                    next unless $step && ref $step eq 'HASH'; # Skip empty/invalid steps
+                                    next unless $step->{action};              # Skip steps with no action
+
+                                    # 1. Resolve variables from previous steps
+                                    # e.g., changing '$user_id' to the actual ID found in step 1
+                                    _resolve_placeholders($step, \%register);
+
+                                    # my $rs = $schema->resultset($step->{resultset});
+                                    my $action = $step->{action};
+                                    my $result_data;
+
+                                    if ($action eq 'raw') {
+                                        # Raw SQL bypasses the Resultset layer
+                                        my $dbh = $schema->storage->dbh;
+                                        $dbh->do($step->{sql}, undef, @{$step->{bind} || []});
+                                        $result_data = { success => 1 };
+                                    }
+                                    else {
+                                        # CRUD operations require a Resultset
+                                        my $rs_name = $step->{resultset}
+                                            or die "txn_do: action '$action' requires a 'resultset' parameter";
+                                        my $rs = $schema->resultset($rs_name);
+
+                                        if ($action eq 'create') {
+                                            my $row = $rs->create($step->{data});
+                                            $result_data = { id => $row->id, data => { $row->get_columns } };
+                                        }
+                                        elsif ($action eq 'find') {
+                                            my $row = $rs->find($step->{id});
+                                            die "txn_do: record not found" unless $row;
+                                            $result_data = { id => $row->id, data => { $row->get_columns } };
+                                        }
+                                        elsif ($action eq 'update') {
+                                            my $row = $rs->find($step->{id});
+                                            die "txn_do: record not found for update" unless $row;
+                                            $row->update($step->{data});
+                                            $result_data = { success => 1, id => $row->id };
+                                        }
+                                    }
+
+                                    if ($step->{name} && $result_data->{id}) {
+                                        $register{ '$' . $step->{name} . '.id' } = $result_data->{id};
+                                    }
+                                    push @step_results, $result_data;
+                                }
+                                return { results => \@step_results, success => 1 };
+                            });
+                        };
+
+                        $result = $@ ? { error => "Transaction failed: $@", success => 0 }
+                                     : $txn_result;
+                    }
                     elsif ($operation eq 'ping') {
                         $result = "pong";
                     }
@@ -558,6 +666,53 @@ sub _init_workers {
             pid => undef,
         };
     }
+}
+
+sub _resolve_placeholders {
+    my ($item, $reg) = @_;
+    return unless defined $item;
+
+    if (ref $item eq 'HASH') {
+        for my $key (keys %$item) {
+            if (ref $item->{$key}) {
+                # Dive deeper into nested structures
+                _resolve_placeholders($item->{$key}, $reg);
+            }
+            elsif (defined $item->{$key} && exists $reg->{$item->{$key}}) {
+                # Exact match: Swap '$user.id' for 42
+                $item->{$key} = $reg->{$item->{$key}};
+            }
+            elsif (defined $item->{$key} && !ref $item->{$key}) {
+                # String interpolation: Handle "ID is $user.id"
+                $item->{$key} = _interpolate_string($item->{$key}, $reg);
+            }
+        }
+    }
+    elsif (ref $item eq 'ARRAY') {
+        for my $i (0 .. $#$item) {
+            if (ref $item->[$i]) {
+                _resolve_placeholders($item->[$i], $reg);
+            }
+            elsif (defined $item->[$i] && exists $reg->{$item->[$i]}) {
+                $item->[$i] = $reg->{$item->[$i]};
+            }
+        }
+    }
+}
+
+sub _interpolate_string {
+    my ($string, $reg) = @_;
+    return $string unless $string =~ /\$/; # Optimization: skip if no $
+
+    # Use a regex to find all keys in the register and replace them
+    # Example: "INSERT INTO logs VALUES ('Created user $user.id')"
+    foreach my $key (keys %$reg) {
+        my $val = $reg->{$key};
+        # Escape the key for regex safety (since it contains $)
+        my $quoted_key = quotemeta($key);
+        $string =~ s/$quoted_key/$val/g;
+    }
+    return $string;
 }
 
 sub _build_default_cache {

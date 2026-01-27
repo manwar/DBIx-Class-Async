@@ -286,6 +286,62 @@ sub sources {
 
 ############################################################################
 
+sub txn_do {
+    my ($self, $steps) = @_;
+
+    croak "txn_do requires an ARRAYREF of steps"
+        unless ref $steps eq 'ARRAY';
+
+    return DBIx::Class::Async::_call_worker(
+        $self->{_async_db},
+        'txn_do',
+        $steps
+    )->then(sub {
+        my ($result) = @_;
+        return Future->fail($result->{error}) if ref $result eq 'HASH' && $result->{error};
+        return Future->done($result);
+    });
+}
+
+sub txn_batch {
+    my ($self, @args) = @_;
+
+    croak "Async database handle not initialised in schema."
+        unless $self->{_async_db};
+
+    # Allow both txn_batch([$h1, $h2]) and txn_batch($h1, $h2)
+    my @operations = (ref $args[0] eq 'ARRAY') ? @{$args[0]} : @args;
+
+    # 1. Parent-side Validation
+    for my $op (@operations) {
+        croak "Each operation must be a hashref with 'type' key"
+            unless (ref $op eq 'HASH' && $op->{type});
+
+        if ($op->{type} =~ /^(update|delete|create)$/) {
+            croak "Operation type '$op->{type}' requires 'resultset' parameter"
+                unless $op->{resultset};
+        }
+    }
+
+    # 2. Direct call to the worker
+    return DBIx::Class::Async::_call_worker(
+        $self->{_async_db},
+        'txn_batch',
+        \@operations
+    )->then(sub {
+        my ($result) = @_;
+
+        # Ensure we handle the result correctly
+        if (ref $result eq 'HASH' && $result->{error}) {
+            return Future->fail($result->{error});
+        }
+
+        return Future->done($result);
+    });
+}
+
+############################################################################
+
 sub _record_metric {
     my ($self, $type, $name, @args) = @_;
 
