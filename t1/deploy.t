@@ -1,6 +1,7 @@
 
 use strict;
 use warnings;
+use Try::Tiny;
 use Test::More;
 use IO::Async::Loop;
 use DBIx::Class::Async::Schema;
@@ -25,44 +26,68 @@ my $async_schema = DBIx::Class::Async::Schema->connect($dsn, {
     workers      => 1,
 });
 
-subtest 'Async Deployment with Temp File' => sub {
-    # Verify table is missing (Pre-deploy)
-    my $check_f = $async_schema->resultset('User')->search_future({});
+subtest "Async Deployment with Temp File" => sub {
+    my $rs = $async_schema->resultset('User');
 
-    # Peel the nested futures
-    my $inner_check_f = $loop->await($check_f);
-    $loop->await($inner_check_f);
+    my $f = $rs->all;
+    my $sql_error = 'NONE';
+    my $res;
+    try {
+        $res = $loop->await($f);
 
-    my $res_err = $inner_check_f->get;
+        # Check if it's a Future
+        if (Scalar::Util::blessed($res) && $res->isa('Future')) {
+            if ($res->is_failed) {
+                $sql_error = ($res->failure)[0];
+            } elsif ($res->is_done) {
+                my @values = $res->get;
+            }
+        }
+    } catch {
+        $sql_error = $_;
+    };
 
-    # Based on your logs, we check if it caught an error HASH
-    # OR if it gracefully returned an empty ARRAY because the table didn't exist
-    ok((ref $res_err eq 'HASH' && $res_err->{error}) || (ref $res_err eq 'ARRAY'),
-       "Query handled pre-deployment state (table missing)")
-       or diag("Unexpected result type: " . ref($res_err));
+    ok($sql_error ne 'NONE', "Caught expected error before deployment");
+    like($sql_error, qr/no such table/i, "SQL error confirmed");
 
-    # Execute Deploy
-    my $deploy_f = $async_schema->deploy();
 
-    # Ensure deployment is finished across all future layers
-    my $inner_deploy_f = $loop->await($deploy_f);
-    $loop->await($inner_deploy_f) if ref $inner_deploy_f eq 'IO::Async::Future';
+    # 2. PERFORM DEPLOYMENT
+    my $deploy_res;
+    try {
+        $deploy_res = $loop->await($async_schema->deploy);
 
-    ok(1, "Deployment command executed successfully");
+        # Handle nested Future for deploy
+        if (Scalar::Util::blessed($deploy_res) && $deploy_res->can('get')) {
+            if ($deploy_res->is_ready && $deploy_res->is_done) {
+                $deploy_res = ($deploy_res->get)[0];
+            }
+        }
+    } catch {
+        fail("Deploy failed: $_");
+    };
 
-    # Verify table exists and is readable (Post-deploy)
-    my $search_f = $async_schema->resultset('User')->search_future({});
+    ok($deploy_res->{success}, "Deployment command executed successfully");
 
-    # Peel the nested futures
-    my $inner_search_f = $loop->await($search_f);
-    $loop->await($inner_search_f);
+    # 3. VERIFY SUCCESS
+    my $after_res;
+    try {
+        $after_res = $loop->await($rs->all);
 
-    my $rows = $inner_search_f->get;
+        # Handle nested Future
+        if (Scalar::Util::blessed($after_res) && $after_res->can('get')) {
+            if ($after_res->is_ready && $after_res->is_done) {
+                $after_res = ($after_res->get)[0];
+            }
+        }
+    } catch {
+        fail("Query failed: $_");
+    };
 
-    is(ref $rows, 'ARRAY', "Search results is an ARRAY reference");
-    is(scalar @$rows, 0, "Database table is empty as expected");
+    is(ref($after_res), 'ARRAY', "Search results is an ARRAY reference");
+    is(scalar @$after_res, 0, "Database table exists and is empty");
 
-    done_testing;
+    done_testing();
 };
+
 
 done_testing;

@@ -18,6 +18,7 @@ use Scalar::Util qw(blessed);
 use DBIx::Class::Async::Row;
 use Types::Standard qw(Str ScalarRef HashRef ArrayRef Maybe Int CodeRef);
 
+use constant ASYNC_TRACE => $ENV{ASYNC_TRACE} || 0;
 our $METRICS;
 
 use constant {
@@ -49,65 +50,94 @@ sub _next_worker {
 }
 
 sub _call_worker {
-     my ($db, $operation, @args) = @_;
+    my ($db, $operation, @args) = @_;
 
-     warn "[PID $$] STAGE 3 (Parent): Calling worker for $operation";
+    my $worker = _next_worker($db);
 
-     my $worker = _next_worker($db);
+    my $future = $worker->call(
+        args => [
+            $db->{_schema_class},
+            $db->{_connect_info},
+            $db->{_workers_config},
+            $operation,
+            @args,
+        ],
+    );
 
-     # 1. Start the call
-     return $worker->call(
-         args => [
-             $db->{_schema_class},
-             $db->{_connect_info},
-             $db->{_workers_config},
-             $operation,
-             @args,
-         ],
-     )->then(sub {
-         my $result = shift;
+    # Use followed_by which handles both nested and non-nested Futures
+    return $future->followed_by(sub {
+        my ($f) = @_;
 
-         # 2. Check for worker-side caught errors
-         if (ref($result) eq 'HASH' && exists $result->{error}) {
-             $db->{_stats}->{_errors}++;
-             # Transform this "done" into a "fail"
-             return Future->fail($result->{error});
-         }
+        # Handle failure
+        if ($f->is_failed) {
+            $db->{_stats}->{_errors}++;
+            return Future->fail($f->failure);
+        }
 
-         # 3. Handle actual success
-         $db->{_stats}->{_queries}++;
-         return Future->done($result);
-     }, sub {
-         # 4. Handle process-level crashes (e.g., worker died)
-         my ($error) = @_;
-         $db->{_stats}->{_errors}++;
-         return Future->fail($error);
-     });
+        # Get the result
+        my $result = ($f->get)[0];
+
+        # If result is itself a Future, flatten it
+        if (Scalar::Util::blessed($result) && $result->isa('Future')) {
+            return $result->followed_by(sub {
+                my ($inner_f) = @_;
+
+                if ($inner_f->is_failed) {
+                    $db->{_stats}->{_errors}++;
+                    return Future->fail($inner_f->failure);
+                }
+
+                my $inner_result = ($inner_f->get)[0];
+
+                # Check for worker errors
+                if (ref($inner_result) eq 'HASH' && exists $inner_result->{error}) {
+                    $db->{_stats}->{_errors}++;
+                    return Future->fail($inner_result->{error});
+                }
+
+                $db->{_stats}->{_queries}++;
+                return Future->done($inner_result);
+            });
+        }
+
+        # Not a nested Future - handle normally
+        # Check for worker errors
+        if (ref($result) eq 'HASH' && exists $result->{error}) {
+            $db->{_stats}->{_errors}++;
+            return Future->fail($result->{error});
+        }
+
+        $db->{_stats}->{_queries}++;
+        return Future->done($result);
+    });
 }
 
 sub delete {
     my ($db, $payload) = @_;
-    warn "[PID $$] Bridge - sending 'delete' to worker";
+    warn "[PID $$] Bridge - sending 'delete' to worker" if ASYNC_TRACE;
     return _call_worker($db, 'delete', $payload);
 }
 
 sub create {
     my ($db, $payload) = @_;
-    warn "[PID $$] STAGE 2 (Parent): Bridge - sending 'create' to worker";
+    warn "[PID $$] STAGE 2 (Parent): Bridge - sending 'create' to worker"
+        if ASYNC_TRACE;
 
     return _call_worker($db, 'create', $payload);
 }
 
 sub update {
     my ($db, $payload) = @_;
-    warn "[PID $$] STAGE 2 (Parent): Bridge - sending 'update' to worker";
+    warn "[PID $$] STAGE 2 (Parent): Bridge - sending 'update' to worker"
+        if ASYNC_TRACE;
 
     return _call_worker($db, 'update', $payload);
 }
 
 sub all {
     my ($db, $payload) = @_;
-    warn "[PID $$] STAGE 2 (Parent): Bridge - sending 'all' to worker";
+    warn "[PID $$] STAGE 2 (Parent): Bridge - sending 'all' to worker"
+        if ASYNC_TRACE;
 
     return _call_worker($db, 'all', $payload);
 }
@@ -115,7 +145,8 @@ sub all {
 sub count {
     my ($db, $payload) = @_;
 
-    warn "[PID $$] STAGE 2 (Parent): Bridge - sending 'count' to worker";
+    warn "[PID $$] STAGE 2 (Parent): Bridge - sending 'count' to worker"
+        if ASYNC_TRACE;
 
     return _call_worker($db, 'count', $payload);
 }
@@ -259,18 +290,25 @@ sub _start_health_checks {
 
     # Try to create the timer
     eval {
-        $async_db->{_health_check_timer} = $async_db->{_loop}->repeat(
+        require IO::Async::Timer::Periodic;
+
+        my $timer = IO::Async::Timer::Periodic->new(
             interval => $interval,
-            code     => sub {
+            on_tick  => sub {
                 # Don't use async here - just fire and forget
                 _health_check($async_db)->retain;
             },
         );
+
+        $async_db->{_loop}->add($timer);
+        $timer->start;
+
+        $async_db->{_health_check_timer} = $timer;
     };
 
     if ($@) {
         # If repeat fails, try a different approach or disable health checks
-        warn "Failed to start health checks: $@" if $ENV{DBIC_ASYNC_DEBUG};
+        warn "Failed to start health checks: $@" if ASYNC_TRACE;
     }
 }
 
@@ -331,70 +369,107 @@ sub _init_workers {
                 use warnings;
                 use feature 'state';
 
-                warn "[PID $$] Worker CODE block started";
 
                 my ($schema_class, $connect_info, $worker_config, $operation, $payload) = @_;
 
-                warn "[PID $$] Worker received " . scalar(@_) . " arguments";
-                warn "[PID $$] Schema class: $schema_class";
-                warn "[PID $$] Operation: $operation";
-                warn "[PID $$] STAGE 4 (Worker): Received operation: $operation";
+                if (ASYNC_TRACE) {
+                    warn "[PID $$] Worker CODE block started";
+                    warn "[PID $$] Worker received " . scalar(@_) . " arguments";
+                    warn "[PID $$] Schema class: $schema_class";
+                    warn "[PID $$] Operation: $operation";
+                    warn "[PID $$] STAGE 4 (Worker): Received operation: $operation";
+                }
+
+                my $deflator;
+                $deflator = sub {
+                    my ($data) = @_;
+                    return $data unless defined $data;
+
+                    if ( eval { $data->isa('DBIx::Class::Row') } ) {
+                        my %cols = $data->get_inflated_columns;
+                        # Recurse for prefetched relations
+                        foreach my $k (keys %cols) {
+                            if (ref $cols{$k}) { $cols{$k} = $deflator->($cols{$k}) }
+                        }
+                        return \%cols;
+                    }
+                    if ( eval { $data->isa('DBIx::Class::ResultSet') } ) {
+                        return [ map { $deflator->($_) } $data->all ];
+                    }
+                    if ( ref($data) eq 'ARRAY' ) {
+                        return [ map { $deflator->($_) } @$data ];
+                    }
+                    return $data;
+                };
 
                 # Create or reuse schema connection
                 state $schema_cache = {};
                 my $pid = $$;
 
-                warn "[PID $$] Checking schema cache for PID $pid";
+                warn "[PID $$] Checking schema cache for PID $pid" if ASYNC_TRACE;
 
                 unless (exists $schema_cache->{$pid}) {
-                    warn "[PID $$] Worker initializing new schema connection";
-                    warn "[PID $$] About to require $schema_class";
+                    if (ASYNC_TRACE) {
+                        warn "[PID $$] Worker initializing new schema connection";
+                        warn "[PID $$] About to require $schema_class";
+                    }
+
 
                     # Load schema class in worker process
                     my $require_result = eval "require $schema_class; 1";
                     if (!$require_result || $@) {
                         my $err = $@ || 'Unknown error';
-                        warn "[PID $$] FAILED to load schema class: $err";
+                        warn "[PID $$] FAILED to load schema class: $err"
+                            if ASYNC_TRACE;
                         die "Worker Load Fail: $err";
                     }
 
-                    warn "[PID $$] Schema class loaded successfully";
+                    warn "[PID $$] Schema class loaded successfully"
+                        if ASYNC_TRACE;
 
                     unless ($schema_class->can('connect')) {
-                        warn "[PID $$] Schema class has no 'connect' method!";
+                        warn "[PID $$] Schema class has no 'connect' method!"
+                            if ASYNC_TRACE;
                         die "Schema class $schema_class does not provide 'connect' method";
                     }
 
-                    warn "[PID $$] Attempting database connection...";
+                    warn "[PID $$] Attempting database connection..."
+                        if ASYNC_TRACE;
 
                     # Connect to database
                     my $schema = eval { $schema_class->connect(@$connect_info); };
                     if ($@) {
-                        warn "[PID $$] Database connection FAILED: $@";
+                        warn "[PID $$] Database connection FAILED: $@"
+                            if ASYNC_TRACE;
                         die "Failed to connect to database: $@";
                     }
                     unless (defined $schema) {
-                        warn "[PID $$] Schema connection returned undef!";
+                        warn "[PID $$] Schema connection returned undef!"
+                            if ASYNC_TRACE;
                         die "Schema connection returned undef";
                     }
 
-                    warn "[PID $$] Database connected successfully";
+                    warn "[PID $$] Database connected successfully"
+                        if ASYNC_TRACE;
 
                     $schema_cache->{$pid} = $schema;
 
-                    warn "[PID $$] Worker initialization complete";
+                    warn "[PID $$] Worker initialization complete"
+                        if ASYNC_TRACE;
                 }
 
-                warn "[PID $$] STAGE 5 (Worker): Executing operation: $operation";
+                warn "[PID $$] STAGE 5 (Worker): Executing operation: $operation"
+                    if ASYNC_TRACE;
 
-                my $result;
-                eval {
+                my $result = try {
                     my $schema = $schema_cache->{$pid};
 
-                    warn "[PID $$] Schema from cache: " . (defined $schema ? ref($schema) : "UNDEF");
+                    warn "[PID $$] Schema from cache: " . (defined $schema ? ref($schema) : "UNDEF")
+                        if ASYNC_TRACE;
 
                     if ($operation =~ /^(count|sum|max|min|avg|average)$/) {
-                        warn "[PID $$] STAGE 6 (Worker): Performing aggregate $operation";
+                        warn "[PID $$] STAGE 6 (Worker): Performing aggregate $operation"
+                            if ASYNC_TRACE;
 
                         my $source_name = $payload->{source_name};
                         my $cond        = $payload->{cond}  // {};
@@ -417,13 +492,14 @@ sub _init_workers {
                         };
 
                         if ($@) {
-                            warn "[PID $$] WORKER ERROR: $@";
-                            $result = { error => $@ };
+                            warn "[PID $$] WORKER ERROR: $@" if ASYNC_TRACE;
+                            return { error => $@ };
                         } else {
                             # IMPORTANT: Force to scalar to avoid HASH(0x...) in Parent
                             # This stringifies potential Math::BigInt objects or references
-                            $result = defined $val ? "$val" : undef;
-                            warn "[PID $$] $operation complete: $result";
+                            warn "[PID $$] $operation complete: $val"
+                                if ASYNC_TRACE;
+                            return defined $val ? "$val" : undef;
                         }
                     }
                     elsif ($operation eq 'search' || $operation eq 'all') {
@@ -437,7 +513,7 @@ sub _init_workers {
                         my @rows = $rs->all;
 
                         # Use your proven old-design logic here
-                        $result = [
+                        return [
                             map { _serialise_row_with_prefetch($_, $attrs->{prefetch}, {}) } @rows
                         ];
                     }
@@ -447,11 +523,11 @@ sub _init_workers {
                         my $updates     = $payload->{updates};
 
                         if (!$updates || !keys %$updates) {
-                            $result = 0;
+                            return 0;
                         } else {
-                            $result = $schema->resultset($source_name)
-                                             ->search($cond)
-                                             ->update($updates);
+                            return $schema->resultset($source_name)
+                                          ->search($cond)
+                                          ->update($updates);
                         }
                     }
                     elsif ($operation eq 'create') {
@@ -465,16 +541,20 @@ sub _init_workers {
                         # Some DBD drivers need this to populate the primary key in the object
                         $row->discard_changes;
 
-                        # Use get_inflated_columns for a clean, flat HashRef
-                        # This bypasses the complexity of the prefetch serializer
-                        $result = { $row->get_inflated_columns };
+                        my %raw = $row->get_columns;
+                        my %clean_data;
+                        for my $key (keys %raw) {
+                            # Force stringification/numification to strip any DBIC internal "magic"
+                            $clean_data{$key} = defined $raw{$key} ? "$raw{$key}" : undef;
+                        }
+                        return \%clean_data;
                     }
                     elsif ($operation eq 'delete') {
                         my $source_name = $payload->{source_name};
                         my $cond        = $payload->{cond};
 
                         # Direct delete on the resultset matching the condition
-                        $result = $schema->resultset($source_name)->search($cond)->delete + 0;
+                        return $schema->resultset($source_name)->search($cond)->delete + 0;
                     }
                     elsif ($operation =~ /^populate(?:_bulk)?$/) {
                         my $source_name = $payload->{source_name};
@@ -497,13 +577,12 @@ sub _init_workers {
                         };
 
                         if ($@) {
-                            warn "[PID $$] WORKER ERROR: $@";
-                            $result = { error => "$@" };
+                            warn "[PID $$] WORKER ERROR: $@" if ASYNC_TRACE;
+                            return { error => "$@" };
                         }
                         else {
-                            $result = $val;
+                            return $val;
                         }
-                        return $result;
                     }
                     elsif ($operation eq 'find') {
                         my $source_name = $payload->{source_name};
@@ -513,9 +592,9 @@ sub _init_workers {
                         my $row = $schema->resultset($source_name)->find($query, $attrs);
 
                         if ($row) {
-                            $result = _serialise_row_with_prefetch($row, undef, $attrs);
+                            return _serialise_row_with_prefetch($row, undef, $attrs);
                         } else {
-                            $result = undef;
+                            return;
                         }
                     }
                     elsif ($operation eq 'deploy') {
@@ -524,10 +603,10 @@ sub _init_workers {
                             $schema->deploy($sqlt_args // {}, $dir);
                         };
                         if ($@) {
-                            $result = { error => "Deploy operation failed: $@" };
+                            return { error => "Deploy operation failed: $@" };
                         }
                         else {
-                            $result = { success => 1 };
+                            return { success => 1 };
                         }
                     }
                     elsif ($operation eq 'txn_batch') {
@@ -571,10 +650,10 @@ sub _init_workers {
                         };
 
                         if ($@) {
-                            $result = { error => "Batch Transaction Aborted: $@", success => 0 };
+                            return { error => "Batch Transaction Aborted: $@", success => 0 };
                         }
                         else {
-                            $result = $batch_result;
+                            return $batch_result;
                         }
                     }
                     elsif ($operation eq 'txn_do') {
@@ -635,37 +714,40 @@ sub _init_workers {
                             });
                         };
 
-                        $result = $@ ? { error => "Transaction failed: $@", success => 0 }
-                                     : $txn_result;
+                        return $@ ? { error => "Transaction failed: $@", success => 0 }
+                                  : $txn_result;
                     }
                     elsif ($operation eq 'txn_begin') {
                         $schema->storage->txn_begin;
-                        $result = { success => 1 };
+                        return { success => 1 };
                     }
                     elsif ($operation eq 'txn_commit') {
                         $schema->storage->txn_commit;
-                        $result = { success => 1 };
+                        return { success => 1 };
                     }
                     elsif ($operation eq 'txn_rollback') {
                         $schema->storage->txn_rollback;
-                        $result = { success => 1 };
+                        return { success => 1 };
                     }
                     elsif ($operation eq 'ping') {
-                        $result = "pong";
+                        return "pong";
                     }
                     else {
                         die "Unknown operation: $operation";
                     }
+                }
+                catch {
+                    warn "[PID $$] Worker execution error: $_"
+                        if ASYNC_TRACE;
+                    return { error => "$_", success => 0 };
                 };
 
-                if ($@) {
-                    warn "[PID $$] Worker execution error: $@";
-                    $result = { __async_error => "$@" };
+                my $safe_result = $deflator->($result);
+                if (ASYNC_TRACE) {
+                    warn "[PID $$] Worker returning result type: " . ref($safe_result);
+                    warn "[PID $$] Worker returning: $safe_result";
                 }
-
-                warn "[PID $$] Worker returning result type: " . ref($result);
-                warn "[PID $$] Worker returning: $result";
-                return $result;
+                return $safe_result;
             },
             max_workers => 1,
         );

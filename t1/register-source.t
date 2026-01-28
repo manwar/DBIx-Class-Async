@@ -33,7 +33,7 @@ subtest "Dynamic Registration Metadata" => sub {
     # 3. Handle the Worker limitation
     # We skip the count_future check for now because Workers don't share
     # the Parent's dynamic memory state.
-    diag "Note: Workers cannot see DynamicSource unless defined in the schema class file.";
+    # Note: Workers cannot see DynamicSource unless defined in the schema class file.";
 };
 
 done_testing;

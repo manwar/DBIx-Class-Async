@@ -83,7 +83,7 @@ subtest 'Schema cloning' => sub {
     my $schema2 = $schema1->clone;
     isa_ok($schema2, 'DBIx::Class::Async::Schema', 'Cloned schema');
 
-    isnt($schema1->{async_db}, $schema2->{async_db}, 'Async DB instances are different');
+    isnt($schema1->{_async_db}, $schema2->{_async_db}, 'Async DB instances are different');
 
     # Both should have same sources
     cmp_bag([$schema1->sources], [$schema2->sources], 'Cloned schema has same sources');

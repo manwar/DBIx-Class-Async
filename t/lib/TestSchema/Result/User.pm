@@ -38,6 +38,10 @@ __PACKAGE__->add_columns(
         is_nullable => 1,
         serializer_class => 'JSON',
     },
+    balance => {
+        data_type => 'decimal',
+        default_value => 0
+    },
 );
 
 __PACKAGE__->set_primary_key('id');

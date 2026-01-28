@@ -13,6 +13,8 @@ use DBIx::Class::Async;
 use DBIx::Class::Async::Row;
 use DBIx::Class::Async::ResultSetColumn;
 
+use constant ASYNC_TRACE => $ENV{ASYNC_TRACE} || 0;
+
 sub new {
     my ($class, %args) = @_;
 
@@ -189,7 +191,9 @@ sub as_query {
 
     # Silence the "Generic Driver" warnings for the duration of this method
     local $SIG{__WARN__} = sub {
-        warn @_ unless $_[0] =~ /undetermined_driver|sql_limit_dialect|GenericSubQ/
+        if (ASYNC_TRACE) {
+            warn @_ unless $_[0] =~ /undetermined_driver|sql_limit_dialect|GenericSubQ/
+        }
     };
 
     unless ($bridge->{_metadata_schema}) {
@@ -258,6 +262,7 @@ sub create {
 
         # 6. Hydrate into an Async-aware Row
         my $obj = $self->result_source->result_class->new({});
+        $obj->{_column_data}   = { %$db_row },
         $obj->{_data}          = { %$db_row };
         $obj->{_in_storage}    = 1;
         $obj->{_dirty}         = {};
@@ -277,7 +282,7 @@ sub count {
 
     my $payload = $self->_build_payload($cond, $attrs);
 
-    warn "[PID $$] STAGE 1 (Parent): Dispatching count";
+    warn "[PID $$] STAGE 1 (Parent): Dispatching count" if ASYNC_TRACE;
 
     # This returns a Future that will be resolved by the worker
     return DBIx::Class::Async::count($db, $payload);
@@ -485,7 +490,8 @@ sub find_or_create {
             # If the error is about a unique constraint, someone else inserted it
             # between our 'find' and 'create' calls.
             if ("$error" =~ /unique constraint|already exists/i) {
-                warn "[PID $$] Race condition detected in find_or_create, retrying find";
+                warn "[PID $$] Race condition detected in find_or_create, retrying find"
+                    if ASYNC_TRACE;
                 return $self->find($lookup, $attrs);
             }
 
@@ -620,7 +626,7 @@ sub pager {
     # Checks if we are NOT in a test environment (HARNESS_ACTIVE)
     if (!$self->is_ordered && !$ENV{HARNESS_ACTIVE}) {
         warn "DBIx::Class::Async Warning: Calling ->pager on an unordered ResultSet. " .
-             "Results may be inconsistent across pages.\n";
+             "Results may be inconsistent across pages.\n" if ASYNC_TRACE;
     }
 
     # 4. Lazy-load and instantiate the Async Pager
@@ -1072,7 +1078,8 @@ sub update_all {
 
         # Hard check: is it really an arrayref?
         unless ($rows && ref($rows) eq 'ARRAY' && @$rows) {
-            warn "[PID $$] update_all found no rows to update or invalid data type";
+            warn "[PID $$] update_all found no rows to update or invalid data type"
+                if ASYNC_TRACE;
             return Future->done(0);
         }
 

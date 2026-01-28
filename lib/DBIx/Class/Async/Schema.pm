@@ -15,6 +15,7 @@ use DBIx::Class::Async::Storage::DBI;
 use Data::Dumper;
 
 our $METRICS;
+use constant ASYNC_TRACE => $ENV{ASYNC_TRACE} || 0;
 
 sub connect {
     my ($class, @args) = @_;
@@ -147,7 +148,7 @@ sub deploy {
         }
 
         # Return the schema object
-        return Future->done($self);
+        return $res;
     });
 }
 
@@ -185,13 +186,14 @@ sub inflate_column {
     my $schema = $self->{_native_schema};
 
     my @known_sources = $schema->sources;
-    warn "[PID $$] Parent Schema class: " . ref($schema);
+    warn "[PID $$] Parent Schema class: " . ref($schema) if ASYNC_TRACE;
 
     # Attempt lookup
     my $source = eval { $schema->source($source_name) };
 
     if (!$source) {
-        warn "[PID $$] Source '$source_name' not found. Attempting force-load via resultset...";
+        warn "[PID $$] Source '$source_name' not found. Attempting force-load via resultset..."
+            if ASYNC_TRACE;
         eval { $schema->resultset($source_name) };
         $source = eval { $schema->source($source_name) };
     }
@@ -275,6 +277,10 @@ sub register_source {
 
 sub resultset {
     my ($self, $source_name) = @_;
+
+    unless (defined $source_name && length $source_name) {
+        croak("resultset() requires a source name");
+    }
 
     # 1. Check our cache for the source metadata
     # (In DBIC, a 'source' contains column info, class names, etc.)
@@ -586,7 +592,6 @@ sub _build_inflator_map {
 
     my $map = {};
     foreach my $source_name ($schema->sources) {
-        warn "[DEBUG] Scanning source: $source_name";
         my $source = $schema->source($source_name);
         foreach my $col ($source->columns) {
             my $info = $source->column_info($col);
