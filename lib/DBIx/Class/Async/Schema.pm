@@ -298,6 +298,22 @@ sub resultset {
 
 ############################################################################
 
+sub schema_version {
+    my $self  = shift;
+
+    # Updated to match your actual internal state key
+    my $class = $self->{_async_db}->{_schema_class};
+
+    unless ($class) {
+        croak("schema_class is not defined in " . ref($self));
+    }
+
+    # Use 'can' to safely check for the method on the class
+    return $class->schema_version if $class->can('schema_version');
+
+    return undef;
+}
+
 sub sync_metadata {
     my ($self) = @_;
 
