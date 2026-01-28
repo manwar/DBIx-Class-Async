@@ -19,30 +19,18 @@ use TestSchema;
 
 my ($fh, $db_file) = File::Temp::tempfile(SUFFIX => '.db', UNLINK => 1);
 
-my $dbh = DBI->connect("dbi:SQLite:dbname=$db_file", "", "", {
-    RaiseError => 1,
-    PrintError => 0,
-});
+# 1. Initialise the Async Schema
+my $schema = DBIx::Class::Async::Schema->connect(
+    "dbi:SQLite:dbname=$db_file",
+    undef, undef, {},
+    { workers => 2, schema_class => 'TestSchema' }
+);
 
-$dbh->do("
-    CREATE TABLE users (
-        id     INTEGER PRIMARY KEY AUTOINCREMENT,
-        name   VARCHAR(50) NOT NULL,
-        email  VARCHAR(100),
-        active INTEGER NOT NULL DEFAULT 1
-    )
-");
+# 2. Get the loop from the internal async_db object
+my $loop = $schema->{_async_db}->{_loop};
 
-$dbh->do("
-    CREATE TABLE orders (
-        id      INTEGER PRIMARY KEY AUTOINCREMENT,
-        user_id INTEGER NOT NULL,
-        amount  DECIMAL(10,2) NOT NULL,
-        status  VARCHAR(20) NOT NULL DEFAULT 'pending'
-    )
-");
-
-$dbh->disconnect;
+# 3. Deploy automatically!
+$loop->await($schema->deploy);
 
 
 # Test 1: Basic schema connection
@@ -189,7 +177,7 @@ subtest 'Search and count' => sub {
     my $active_users = $active_users_future->get;
     isa_ok($active_users, 'ARRAY', 'search returns array of rows');
 
-    # NEW TEST: Check array has at least 1 item
+    # Check array has at least 1 item
     cmp_ok(scalar @$active_users, '>=', 1, 'Found active users');
 
     # Count active

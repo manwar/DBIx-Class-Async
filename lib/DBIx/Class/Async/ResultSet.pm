@@ -236,12 +236,8 @@ sub create {
         $deflated_data{$clean_key} = $v;
     }
 
-    # 3. Leverage your specialized payload builder
-    # We pass the deflated data as the 'cond' or 'data'
-    # depending on how your worker expects 'create' to look.
+    # 3. Leverage specialised payload builder
     my $payload = $self->_build_payload(\%deflated_data);
-
-    # Ensure the worker sees this as the 'data' key for insertion
     $payload->{data} = \%deflated_data;
 
     # 4. Dispatch with correct signature
@@ -260,17 +256,9 @@ sub create {
             }
         }
 
-        # 6. Hydrate into an Async-aware Row
-        my $obj = $self->result_source->result_class->new({});
-        $obj->{_column_data}   = { %$db_row },
-        $obj->{_data}          = { %$db_row };
-        $obj->{_in_storage}    = 1;
-        $obj->{_dirty}         = {};
-        $obj->{_source_name}   = $source_name;
-        $obj->{_result_source} = $self->result_source;
-        $obj->{_async_db}      = $db;
+        # 6. Use new_result to create new row
+        my $obj = $self->new_result($db_row, { in_storage => 1 });
 
-        bless $obj, 'DBIx::Class::Async::Row';
         return Future->done($obj);
     });
 }

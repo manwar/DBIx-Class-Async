@@ -627,7 +627,7 @@ sub update_or_insert {
             # 1. Update core data first
             $self->{_data}{$col} = $new_val;
 
-            # 2. Clear caches
+            # 1. Clear caches
             delete $self->{_inflated}{$col};
             delete $self->{_dirty}{$col};
 
@@ -1030,7 +1030,7 @@ sub _fetch_relationship_async {
     }
 
     if ($is_single) {
-        return $self->{async_db}->resultset($target_source)
+        return $self->{_schema_instance}->resultset($target_source)
             ->search(\%search_params, { %{$attrs // {}}, rows => 1 })
             ->next
             ->then(sub {
@@ -1041,8 +1041,8 @@ sub _fetch_relationship_async {
     }
     else {
         # Multi returns the RS directly (synchronously)
-        my $rs = $self->{async_db}->resultset($target_source)
-                                  ->search(\%search_params, $attrs);
+        my $rs = $self->{_schema_instance}->resultset($target_source)
+                                          ->search(\%search_params, $attrs);
 
         $self->{_related}{$rel_name} = $rs;
         return $rs;
