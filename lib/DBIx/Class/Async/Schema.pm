@@ -17,6 +17,31 @@ use Data::Dumper;
 our $METRICS;
 use constant ASYNC_TRACE => $ENV{ASYNC_TRACE} || 0;
 
+sub await {
+    my ($self, $future) = @_;
+
+    my $loop = $self->{_async_db}->{_loop};
+    my @results = $loop->await($future);
+
+    # Unwrap nested Futures
+    while (@results == 1
+           && defined $results[0]
+           && Scalar::Util::blessed($results[0])
+           && $results[0]->isa('Future')) {
+
+        if (!$results[0]->is_ready) {
+            @results = $loop->await($results[0]);
+        } elsif ($results[0]->is_failed) {
+            my ($error) = $results[0]->failure;
+            die $error;
+        } else {
+            @results = $results[0]->get;
+        }
+    }
+
+    return wantarray ? @results : $results[0];
+}
+
 sub connect {
     my ($class, @args) = @_;
 
@@ -144,7 +169,7 @@ sub deploy {
 
         # Return the result (usually { success => 1 } or similar)
         # or return $self if you want to allow chaining.
-        return Future->done($res);
+        return $res;
     });
 }
 
