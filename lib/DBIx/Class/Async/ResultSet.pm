@@ -928,10 +928,8 @@ sub search {
     my $merged_attrs = { %{$self->{_attrs} || {}}, %{$attrs || {}} };
 
     return $self->new_result_set({
-        cond            => $new_cond,
-        attrs           => $merged_attrs,
-        #async_db        => $self->{_async_db},
-        #schema_instance => $self->{_schema_instance},
+        cond          => $new_cond,
+        attrs         => $merged_attrs,
         pos           => 0,
         pager         => undef,
         entries       => undef,
