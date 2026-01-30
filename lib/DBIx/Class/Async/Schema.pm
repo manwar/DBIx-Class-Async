@@ -212,6 +212,33 @@ sub disconnect {
 
 ############################################################################
 
+sub health_check {
+    my ($self) = @_;
+
+    my $async_db = $self->{_async_db};
+
+    my @futures;
+    for (1 .. $async_db->{_workers_config}->{_count}) {
+        push @futures, DBIx::Class::Async::_call_worker($async_db, 'ping', {});
+    }
+
+    return Future->wait_all(@futures)->then(sub {
+        my @res_futures = @_;
+
+        # Count how many actually returned a successful ping
+        my $healthy_count = grep {
+            $_->is_done && !$_->failure && ($_->get->{success} // 0)
+        } @res_futures;
+
+        # Record the metric
+        $self->_record_metric('set', 'db_async_workers_active', $healthy_count);
+
+        return Future->done($healthy_count);
+    });
+}
+
+############################################################################
+
 sub inflate_column {
     my ($self, $source_name, $column, $handlers) = @_;
 

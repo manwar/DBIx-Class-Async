@@ -731,7 +731,8 @@ sub _init_workers {
                         return { success => 1 };
                     }
                     elsif ($operation eq 'ping') {
-                        return "pong";
+                        my $alive = eval { $schema->storage->dbh->do("SELECT 1") };
+                        return { success => ($alive ? 1 : 0), status => "pong" };
                     }
                     else {
                         die "Unknown operation: $operation";
