@@ -274,6 +274,9 @@ sub inflate_column {
 
 ############################################################################
 
+sub loop  { shift->{_async_db}->{_loop}  }
+sub stats { shift->{_async_db}->{_stats} }
+
 sub native_schema {
     my $self = shift;
     return $self->{_native_schema};
