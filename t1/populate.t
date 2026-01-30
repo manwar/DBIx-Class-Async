@@ -1,71 +1,49 @@
+#!/usr/bin/env perl
 
 use strict;
 use warnings;
+
 use Test::More;
-use File::Temp qw(tempfile);
+use Test::Deep;
+use File::Temp;
 use IO::Async::Loop;
-use lib 'lib';
-use TestSchema;
 use DBIx::Class::Async::Schema;
 
-BEGIN {
-    $SIG{__WARN__} = sub {};
-}
+use lib 't/lib';
 
-# 1. Setup real temporary SQLite database
-my ($fh, $filename) = tempfile(SUFFIX => '.db', UNLINK => 1);
-my $dsn = "dbi:SQLite:dbname=$filename";
+my $loop           = IO::Async::Loop->new;
+my ($fh, $db_file) = File::Temp::tempfile(SUFFIX => '.db', UNLINK => 1);
+my $schema         = DBIx::Class::Async::Schema->connect(
+    "dbi:SQLite:dbname=$db_file", undef, undef, {},
+    { workers      => 2,
+      schema_class => 'TestSchema',
+      async_loop   => $loop,
+      cache_ttl    => 60,
+    },
+);
 
-TestSchema->connect($dsn)->deploy();
-
-my $loop = IO::Async::Loop->new;
-my $async_schema = DBIx::Class::Async::Schema->connect($dsn, {
-    schema_class => 'TestSchema',
-    async_loop   => $loop,
-    workers      => 2,
-});
-
-my $rs = $async_schema->resultset('User');
+$schema->await($schema->deploy({ add_drop_table => 1 }));
 
 subtest 'Standard Populate' => sub {
-    my $f = $async_schema->resultset('User')->populate([
-        [qw/name age/],
-        ['Dave', 50],
-        ['Eve', 25]
-    ]);
+    my $rows = $schema->resultset('User')
+                      ->populate([
+                         [qw/name age/],
+                         ['Dave', 50],
+                         ['Eve',  25]
+                      ])
+                      ->get;
 
-    # Use the helper we defined above
-    my $res = wait_for($f);
-
-    is(ref $res, 'ARRAY', "Returns array of rows");
-    is(scalar @$res, 2, "Got 2 rows back");
-    is($res->[0]{name}, 'Dave', "Dave is here");
-
-    done_testing(); # Marks the subtest as finished
+    is(ref $rows, 'ARRAY', "Returns array of rows");
+    is(scalar @$rows, 2, "Got 2 rows back");
+    is($rows->[0]{name}, 'Dave', "Dave is here");
 };
 
 subtest 'Bulk Populate' => sub {
-    my $f = $async_schema->resultset('User')->populate_bulk([
-        { name => 'Frank', age => 28 }
-    ]);
+    my $rows = $schema->resultset('User')
+                      ->populate_bulk([ { name => 'Frank', age => 28 } ])
+                      ->get;
 
-    my $res = wait_for($f);
-
-    ok($res, "Bulk returns truthy success");
-    done_testing();
+    ok($rows, "Bulk returns truthy success");
 };
 
-done_testing(); # Marks the whole script as finished
-
-sub wait_for {
-    my $f = shift;
-    my $result;
-    $f->on_ready(sub {
-        my $f = shift;
-        $result = $f->is_done ? $f->result : undef;
-        $loop->stop;
-    });
-    $loop->run;
-    return $result;
-}
-
+done_testing;

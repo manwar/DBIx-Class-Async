@@ -1002,7 +1002,7 @@ sub search_related {
 
     # In an async context, search_related usually implies
     # wanting the ResultSet object to call ->all_future on later.
-    return $new_rs;
+    return $new_rs->all;
 }
 
 sub search_related_rs {
@@ -1012,23 +1012,36 @@ sub search_related_rs {
     my $source = $self->{_result_source}
               || $self->{_schema_instance}->resultset($self->{_source_name})->result_source;
 
-    # 2. Create the Shadow RS
+    # 2. Create the Shadow RS starting from the PARENT source
     require DBIx::Class::ResultSet;
-    my $shadow_rs = DBIx::Class::ResultSet->new($source, {
-        cond  => $self->can('ident_condition') ? { $self->ident_condition } : $self->{_cond},
-        attrs => $self->{_attrs} || {},
+    my $parent_shadow = DBIx::Class::ResultSet->new($source, {
+         cond  => $self->{_cond}  || {},
+         attrs => $self->{_attrs} || {},
     });
 
     # 3. Pivot
-    my $related_shadow = $shadow_rs->search_related($rel_name, $cond, $attrs);
+    # my $related_shadow = $shadow_rs->search_related($rel_name, $cond, $attrs);
 
-    # 4. Wrap with ALL required keys for your constructor
+    # 3. Pivot using the standard DBIC logic
+    # This forces DBIC to calculate the JOIN or the subquery for 'orders'
+    my $related_shadow = $parent_shadow->search_related($rel_name, $cond, $attrs);
+
+    # 4. Wrap with ALL required keys
     return DBIx::Class::Async::ResultSet->new(
         schema_instance => $self->{_schema_instance},
-        async_db    => $self->{_async_db},
-        source_name => $related_shadow->result_source->source_name,
-        cond        => $related_shadow->{cond},
-        attrs       => $related_shadow->{attrs},
+        async_db        => $self->{_async_db},
+        source_name     => $related_shadow->result_source->source_name,
+
+        cond => $related_shadow->{attrs}{where} || $related_shadow->{cond},
+
+        # Only pass serialisable attrs
+        attrs => {
+            where    => $related_shadow->{attrs}{where},
+            join     => $related_shadow->{attrs}{join},
+            order_by => $related_shadow->{attrs}{order_by},
+            rows     => $related_shadow->{attrs}{rows},
+            page     => $related_shadow->{attrs}{page},
+        },
     );
 }
 
