@@ -139,13 +139,25 @@ sub is_cache_found {
 sub clear_cache {
     my ($self) = @_;
     my $source = $self->{_source_name};
+    my $db     = $self->{_async_db};
 
-    # Kill the local ghost
+    # 1. Kill the local ghost
     $self->{_rows} = undef;
 
-    # Kill the central surgical bucket
-    if ($self->{_async_db}) {
-        delete $self->{_async_db}->{_query_cache}->{$source};
+    return unless $db;
+
+    # 2. Kill the central surgical bucket (the nested one)
+    if ($db->{_query_cache}) {
+         delete $db->{_query_cache}->{$source};
+    }
+
+    # 3. NEW: Kill the general cache (the flat one we use for count)
+    if ($db->{_cache}) {
+        foreach my $key (keys %{$db->{_cache}}) {
+            if ($key =~ /^\Q$source\E\|/) {
+                delete $db->{_cache}->{$key};
+            }
+        }
     }
 }
 
@@ -186,8 +198,8 @@ sub all {
         return Future->done($self->{_rows});
     }
 
-    # 3. Check Surgical Schema Cache
-    my $cache_key = $self->_generate_cache_key;
+    # 3. Check Shared Cache
+    my $cache_key = $self->_generate_cache_key(0);
     if (my $cached = $self->is_cache_found($cache_key)) {
         $db->{_stats}->{_cache_hits}++;
         $self->{_rows} = $cached;
@@ -195,10 +207,13 @@ sub all {
     }
 
     # 4. Standard Async Fetch (The Miss)
-    return $self->all_future->then(sub {
-        my ($rows) = @_;
+    $db->{_stats}->{_cache_misses}++;
+    return $self->all_future->on_done(sub {
+        my $rows = shift;
 
-        $db->{_stats}->{_cache_misses}++;
+        # Use the key to store it where is_cache_found can see it
+        $db->{_cache}{$cache_key} = $rows if $db->{cache_ttl};
+
         $self->{_rows} = $rows;
 
         # Save to surgical bucket
@@ -355,12 +370,23 @@ sub count {
 
     my $db = $self->{_async_db};
 
+    my $cache_key = $self->_generate_cache_key(1);
+    if (defined $cache_key && exists $db->{_cache}{$cache_key}) {
+        $db->{_stats}{_cache_hits}++;
+        return Future->done($db->{_cache}{$cache_key});
+    }
+
+    $db->{_stats}{_cache_misses}++;
+
     my $payload = $self->_build_payload($cond, $attrs);
 
     warn "[PID $$] STAGE 1 (Parent): Dispatching count" if ASYNC_TRACE;
 
     # This returns a Future that will be resolved by the worker
-    return DBIx::Class::Async::count($db, $payload);
+    return DBIx::Class::Async::count($db, $payload)->on_done(sub {
+        my $result = shift;
+        $db->{_cache}{$cache_key} = $result if defined $cache_key;
+    });
 }
 
 sub count_future {
@@ -1244,14 +1270,30 @@ sub update_or_create {
 ############################################################################
 
 sub _generate_cache_key {
-    my ($self) = @_;
+    my ($self, $is_count_op) = @_;
 
-    # We combine the source name, conditions, and attributes
-    # Sortkeys is vital so {a=>1, b=>2} is the same as {b=>2, a=>1}
+    # Force Data::Dumper to be a "pure" string generator
+    local $Data::Dumper::Terse    = 1;
+    local $Data::Dumper::Indent   = 0;
+    local $Data::Dumper::Sortkeys = 1;
+
+    my %clean_attrs;
+    my $orig_attrs = $self->{_attrs} // {};
+
+    # Whitelist only keys that affect SQL
+    foreach my $key (qw(rows offset alias page order_by group_by select as join prefetch)) {
+        $clean_attrs{$key} = $orig_attrs->{$key} if exists $orig_attrs->{$key};
+    }
+
+    if ($is_count_op && ($clean_attrs{rows} || $clean_attrs{offset})) {
+         $clean_attrs{alias}       //= 'subquery_for_count';
+         $clean_attrs{is_subquery} //= 1;
+    }
+
     return join('|',
-        $self->{_source_name},
-        Data::Dumper->new([ $self->{_cond}  // {} ])->Sortkeys(1)->Indent(0)->Dump,
-        Data::Dumper->new([ $self->{_attrs} // {} ])->Sortkeys(1)->Indent(0)->Dump,
+        $self->{_source_name} // '',
+        Data::Dumper->new([ $self->{_cond}  // {} ])->Dump, # Settings applied globally
+        Data::Dumper->new([ \%clean_attrs ])->Dump,
     );
 }
 

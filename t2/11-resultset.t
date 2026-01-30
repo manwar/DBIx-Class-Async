@@ -78,7 +78,6 @@ subtest 'Search operations' => sub {
 
     my $rs = $schema->resultset('User');
 
-    # Test async search - search() builds query, all_future() executes
     my $search_rs = $rs->search({ active => 1 });
     my $future    = $search_rs->all_future;
     isa_ok($future, 'Future', 'all_future() returns Future');
@@ -190,7 +189,7 @@ subtest 'Sync iteration with next()' => sub {
     # next() returns a Future, so we must ->get it to see the result
     while (my $f = $search_rs->next) {
         my $row = $f->get;
-        last unless defined $row; # This is how we detect the end of the ResultSet
+        last unless defined $row;
         $sync_count++;
     }
 

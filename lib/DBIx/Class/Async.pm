@@ -95,7 +95,8 @@ sub _call_worker {
                     return Future->fail($inner_result->{error});
                 }
 
-                $db->{_stats}->{_queries}++;
+                $db->{_stats}->{_queries}++
+                    unless $operation =~ /^(?:ping|health_check|deploy)$/;
                 return Future->done($inner_result);
             });
         }
@@ -107,7 +108,8 @@ sub _call_worker {
             return Future->fail($result->{error});
         }
 
-        $db->{_stats}->{_queries}++;
+        $db->{_stats}->{_queries}++
+            unless $operation =~ /^(?:ping|health_check|deploy)$/;
         return Future->done($result);
     });
 }

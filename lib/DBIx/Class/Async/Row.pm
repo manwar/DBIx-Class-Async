@@ -137,7 +137,19 @@ sub delete {
     }
 
     if (my $db = $self->{_async_db}) {
-        delete $db->{_query_cache}->{$self->{_source_name}};
+        my $source = $self->{_source_name};
+
+        # Clear the surgical/nested cache
+        delete $db->{_query_cache}->{$source};
+
+        # Clear the flat cache used by count/all
+        if ($db->{_cache}) {
+            foreach my $key (keys %{$db->{_cache}}) {
+                if ($key =~ /^\Q$source\E\|/) {
+                    delete $db->{_cache}->{$key};
+                }
+            }
+        }
     }
 
     # 2. Use the Bridge (Ensure you use the key names the Worker expects)

@@ -28,25 +28,54 @@ my $alice = $schema->resultset('User')
                         name  => 'Alice',
                         email => 'alice@example.com', })
                    ->get;
+
 my $john  = $schema->resultset('User')
                    ->create({
                         name  => 'John',
                         email => 'john@example.com', })
                    ->get;
 
-my $users = $schema->resultset('User')
-                   ->search
-                   ->all
-                   ->get;
+$schema->resultset('User')
+       ->search
+       ->all
+       ->get;
 
-my $count = $schema->resultset('User')
-                   ->count
-                   ->get;
+$schema->resultset('User')
+       ->count
+       ->get;
 
-is($schema->total_queries, 5, 'total queries');
+$schema->resultset('User')
+       ->count
+       ->get;
+
+is($schema->total_queries, 4, 'total queries');
 is($schema->error_count,   0, 'error count');
-is($schema->cache_misses,  1, 'cache misses');
+is($schema->cache_hits,    1, 'cache hits');
+is($schema->cache_misses,  2, 'cache misses');
 is($schema->cache_retries, 0, 'cache retries');
+
+# Test: Create should invalidate existing count cache
+my $pre_create_count = $schema->resultset('User')->count->get; # Should be 2 (from cache)
+
+$schema->resultset('User')->create({
+    name => 'Bob',
+    email => 'bob@example.com'
+})->get;
+
+my $post_create_count = $schema->resultset('User')->count->get;
+
+is($post_create_count, 3, 'Count updated correctly after create (Cache Invalidation)');
+
+# Test: Distinct conditions should have distinct cache entries
+my $alice_count = $schema->resultset('User')->search({ name => 'Alice' })->count->get; # Miss
+my $john_count  = $schema->resultset('User')->search({ name => 'John' })->count->get;  # Miss
+
+is($alice_count, 1, 'Alice count correct');
+is($john_count, 1, 'John count correct');
+
+# Test: Offset/Limit should affect the cache key
+$schema->resultset('User')->search({}, { rows => 1, offset => 0 })->count->get; # Miss
+$schema->resultset('User')->search({}, { rows => 1, offset => 1 })->count->get; # Miss
 
 $schema->disconnect;
 

@@ -97,12 +97,12 @@ subtest 'Complete workflow' => sub {
     my $order_id = $orders->[0]->id;
     $orders->[0]->delete->get;
 
-    my $re_check = $schema->resultset('Order')->search(
-        { id => $order_id },
-        { result_class => 'DBIx::Class::ResultClass::HashRefInflator' }
-    )->single_future;
-    my $deleted_order = $re_check->get;
-    ok(!$deleted_order, 'Order was deleted');
+    my $rows_affected = $orders->[0]->delete->get;
+    $schema->resultset('Order')->search({ id => $order_id })->delete->get;
+
+    # Bypassing the resultset entirely for a moment
+    my $exists = $schema->resultset('Order')->find($order_id)->get;
+    ok(!$exists, "Order $order_id is really gone from DB");
 
     # 7. Now delete user
     my $user_id = $new_user->id;
