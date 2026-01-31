@@ -598,18 +598,20 @@ sub first {
 sub find {
     my ($self, $id_or_cond) = @_;
 
-    # 1. Immediate return for undef
     return Future->done(undef) unless defined $id_or_cond;
 
-    # 2. Build condition
-    my $cond = ref($id_or_cond) eq 'HASH' ? $id_or_cond : { id => $id_or_cond };
+    my $cond;
+    if (ref($id_or_cond) eq 'HASH') {
+        $cond = $id_or_cond;
+    }
+    else {
+        # GET THE REAL PK NAME
+        my @pks = $self->result_source->primary_columns;
+        die "find() with scalar only works on single PK tables" if @pks > 1;
+        $cond = { $pks[0] => $id_or_cond };
+    }
 
-    # 3. Create a new ResultSet state with the condition
-    # search() uses our generic new_result_set() translator
-    my $rs = $self->search($cond);
-
-    # 4. Delegate execution to single()
-    return $rs->single;
+    return $self->search($cond)->single;
 }
 
 sub find_or_new {
@@ -1168,7 +1170,13 @@ sub search_with_pager {
 
 sub single        { shift->first }
 
-sub single_future { shift->first }
+sub single_future {
+    my ($self, $cond) = @_;
+
+    # If a condition is provided, chain it.
+    # Otherwise, just call first on the current resultset.
+    return $cond ? $self->search($cond)->first : $self->first;
+}
 
 sub stats {
     my ($self, $key) = @_;
