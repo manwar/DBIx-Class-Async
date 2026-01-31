@@ -48,49 +48,113 @@ sub new {
 
 sub new_result {
     my ($self, $data, $attrs) = @_;
-    return undef unless defined $data;
+    return unless defined $data;
 
-    my $storage_hint = (ref $attrs eq 'HASH') ? $attrs->{in_storage} : undef;
+    my $in_storage = (ref $attrs eq 'HASH' && exists $attrs->{in_storage})
+                     ? $attrs->{in_storage}
+                     : 0;  # Default to NOT in storage
 
-    # Use the standardized internal keys
-    my $db = $self->{_async_db};
-    my $schema_instance = $self->{_schema_instance};
+    # Ensure we are working with a hash copy
+    my %raw_data = ref $data eq 'HASH' ? %$data : ();
+    my %col_data;
+    my %rel_data;
 
-    # 1. Row Construction
-    # Note: We pass clean keys (no underscores) to match your Row constructor rule
-    my $row = DBIx::Class::Async::Row->new(
-        schema_instance => $schema_instance,
-        async_db        => $db,
+    # It converts {'user.id' => 2, 'user.name' => 'Bob'}
+    # into { user => { id => 2, name => 'Bob' } }
+    my @all_keys = keys %raw_data;
+
+    foreach my $key (@all_keys) {
+        # Check for dots (e.g., 'user.name')
+        if ($key =~ /^(.+)\.(.+)$/) {
+            my ($rel, $subcol) = ($1, $2);
+
+            # Initialize the nested hash if it doesn't exist
+            $raw_data{$rel} //= {};
+
+            # Move the value into the nested hash
+            $raw_data{$rel}{$subcol} = $raw_data{$key};
+
+            # Delete the original dotted key safely
+            delete $raw_data{$key};
+        }
+    }
+
+    foreach my $key (keys %raw_data) {
+        my $val = $raw_data{$key};
+
+        # Only treat as a relationship if the source explicitly says it is
+        if ($self->result_source->has_relationship($key) &&
+            !$self->result_source->has_column($key)) {
+
+            my $rel_info = $self->result_source->relationship_info($key);
+            if (defined $val) {
+                if ($rel_info->{attrs}{accessor} eq 'multi') {
+                    $rel_data{$key} = $self->_new_prefetched_dataset($val, $key);
+                }
+                else {
+                    # belongs_to / might_have: Inflate into a Row object immediately
+                    if (ref $val eq 'HASH' && grep { defined } values %$val) {
+                        my $rel_rs = $self->result_source->schema->resultset($rel_info->{source});
+                        $rel_data{$key} = $rel_rs->new_result($val);
+                    }
+                    else {
+                        $rel_data{$key} = undef;
+                    }
+                }
+            }
+        }
+        else {
+            # Regular database column
+            $col_data{$key} = $val;
+        }
+    }
+
+    # Create Row using the proper constructor
+    my $new_row = DBIx::Class::Async::Row->new(
+        schema_instance => $self->{_schema_instance},
+        async_db        => $self->{_async_db},
         source_name     => $self->{_source_name},
-        row_data        => $data,
-        in_storage      => $storage_hint // 0,
+        result_source   => $self->result_source,
+        row_data        => \%col_data,
+        in_storage      => $in_storage,
     );
 
-    # 2. Dynamic Class Hijacking
-    # We must check the override (_result_class) FIRST.
-    my $target_class = $self->{_attrs}->{result_class} || $self->{_result_class};
-    my $base_row_class = ref($row);
+    # Set the relationship data
+    $new_row->{_relationship_data} = { %rel_data };
+
+    # Dynamic Class Hijacking - handle custom result_class
+    my $target_class = $self->{_attrs}->{result_class} || $self->result_class;
+    my $base_row_class = ref($new_row);
 
     if ($target_class && $target_class ne $base_row_class) {
-        # Re-generate the anon class name based on the CORRECT target
+        # Create anonymous class name
         my $safe_target = $target_class =~ s/::/_/gr;
         my $anon_class = "DBIx::Class::Async::Anon::${safe_target}";
 
         no strict 'refs';
         unless (@{"${anon_class}::ISA"}) {
+            # Load the custom class if not already loaded
             unless ($target_class->can('can')) {
-                 eval "require $target_class" or die "Could not load $target_class: $@";
+                eval "require $target_class" or die "Could not load $target_class: $@";
             }
 
-            # IMPORTANT: Reverse the order here.
+            # Set up inheritance: Anon -> AsyncRow -> CustomClass
             @{"${anon_class}::ISA"} = ($base_row_class, $target_class);
         }
-        bless $row, $anon_class;
 
-        $row->_ensure_accessors if $row->can('_ensure_accessors');
+        # Re-bless into the anonymous class
+        bless $new_row, $anon_class;
+
+        # Ensure accessors are created
+        $new_row->_ensure_accessors if $new_row->can('_ensure_accessors');
     }
 
-    return $row;
+    # ACTIVATE the accessors in Row.pm
+    if ($new_row->can('_install_prefetch_accessors')) {
+        $new_row->_install_prefetch_accessors;
+    }
+
+    return $new_row;
 }
 
 sub new_result_set {
@@ -271,7 +335,7 @@ sub all_future {
         }
 
         # 3. Otherwise, turn into Row objects
-        my @objects = map { $self->_inflate_row($_) } @$rows_data;
+        my @objects = map { $self->_inflate_row($_, { in_storage => 1 }) } @$rows_data;
         return \@objects;
     });
 }
@@ -523,7 +587,7 @@ sub first {
     # 1. If we already have data in memory, use it!
     if ($self->{_rows} && @{$self->{_rows}}) {
         my $data = $self->{_rows}[0];
-        my $row = (ref($data) eq 'HASH') ? $self->_inflate_row($data) : $data;
+        my $row = (ref($data) eq 'HASH') ? $self->_inflate_row($data, { in_storage => 1 }) : $data;
         return Future->done($row);
     }
 
@@ -1318,6 +1382,41 @@ sub update_or_create {
 }
 
 ############################################################################
+
+sub _new_prefetched_dataset {
+    my ($self, $data, $rel_name) = @_;
+
+    # 1. Identify the target source for the relationship
+    my $rel_info = $self->result_source->relationship_info($rel_name)
+        or die "No relationship info found for: $rel_name";
+
+    my $rel_source_class = $rel_info->{source};
+
+    # Extract moniker: "TestSchema::Result::Order" -> "Order"
+    my $rel_moniker = $rel_source_class;
+    $rel_moniker    =~ s/^.*::Result:://;
+
+    # 2. Build args - let the schema handle the source lookup
+    my %new_args = (
+        schema_instance => $self->{_schema_instance},
+        async_db        => $self->{_async_db},
+        source_name     => $rel_moniker,
+        cond            => {},
+        attrs           => {},
+    );
+
+    # 3. Create ResultSet via schema to ensure proper source binding
+    my $new_rs = $self->{_schema_instance}->resultset($rel_moniker);
+
+    # 4. Populate internal cache with inflated Row objects
+    my @rows_data     = (ref $data eq 'ARRAY') ? @$data : ($data);
+    my @inflated_rows = map { $new_rs->new_result($_) } grep { defined } @rows_data;
+
+    $new_rs->{_entries} = \@inflated_rows;
+    $new_rs->{_is_prefetched} = 1;
+
+    return $new_rs;
+}
 
 sub _generate_cache_key {
     my ($self, $is_count_op) = @_;

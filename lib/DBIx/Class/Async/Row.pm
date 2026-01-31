@@ -31,6 +31,9 @@ sub new {
     my $in_storage = delete $args{in_storage} // 0;
     my $data       = $args{row_data} || $args{_data} || {};
 
+    # Capture pre-inflated relationship objects
+    my $rel_data   = $args{relationship_data} // {};
+
     my $self = bless {
         _schema_instance => $args{schema_instance},
         _async_db        => $args{async_db},
@@ -39,7 +42,7 @@ sub new {
         _data            => { %$data },
         _dirty           => {},
         _inflated        => {},
-        _related         => {},
+        _related         => { %$rel_data },
         _in_storage      => $in_storage,
         _inflation_map   => {},
     }, $class;
@@ -49,6 +52,8 @@ sub new {
     # WARM-UP: Pre-calculate metadata and shadow plain columns for speed
     my $source = $self->_get_source;
     if ($source && ref($source) && eval { $source->can('has_column') }) {
+
+        # 1. Shadow physical columns
         foreach my $col (keys %$data) {
             # Skip internal plumbing
             next if $self->_is_internal($col);
@@ -63,17 +68,18 @@ sub new {
                     $self->{$col} = $data->{$col};
                 }
             }
-            else {
-                # Relationship or custom key - safe to shadow
-                $self->{$col} = $data->{$col};
-                $self->{_inflation_map}{$col} = 0;
-            }
+        }
+
+        # 2. Shadow relationship objects for fast access
+        foreach my $rel (keys %$rel_data) {
+            $self->{$rel} = $rel_data->{$rel};
+            # Mark as "inflated" so accessors don't try to re-fetch from DB
+            $self->{_inflation_map}{$rel} = 0;
         }
     }
 
     return $self;
 }
-
 
 sub copy {
     my ($self, $changes) = @_;
@@ -815,9 +821,32 @@ sub AUTOLOAD {
             no warnings 'redefine';
             my $class = ref($self);
             *{"${class}::$method"} = sub {
-                my ($inner_self, @args) = @_;
-                return $inner_self->_fetch_relationship_async($method, $rel_info, @args);
+                my ($current_row) = @_;
+
+                my $row_id = eval { $current_row->get_column('id') } // 'unknown';
+
+                # Check if the relationship data exists
+                if (exists $current_row->{_relationship_data}{$method}) {
+                    my $prefetched = $current_row->{_relationship_data}{$method};
+
+                    if (($rel_info->{attrs}{accessor} // '') ne 'multi') {
+                        if (Scalar::Util::blessed($prefetched)) {
+                            return Future->done($prefetched);
+                        }
+                        if (ref($prefetched) eq 'HASH') {
+                            my $rs  = $current_row->{_schema_instance}->resultset($rel_info->{source});
+                            my $obj = $rs->new_result($prefetched);
+                            $current_row->{_relationship_data}{$method} = $obj;
+                            return Future->done($obj);
+                        }
+                        return Future->done($prefetched);
+                    }
+                    return $prefetched;
+                }
+
+                return $current_row->related_resultset($method);
             };
+
             return $self->$method(@_);
         }
     }
@@ -1000,7 +1029,6 @@ sub _ensure_accessors {
     my $class  = ref($self);
 
     return unless $class;
-    #return if $class eq 'DBIx::Class::Async::Row';
 
     # 1. Handle Columns
     if ($source->can('columns')) {
@@ -1030,9 +1058,62 @@ sub _ensure_accessors {
 
             *{"${class}::$rel_name"} = sub {
                 my ($inner, @args) = @_;
+
+                # PRIORITY: If we have a prefetched object, return it.
+                # This prevents calling _fetch_relationship_async on raw data.
+                return $inner->{_related}{$rel_name}
+                    if exists $inner->{_related}{$rel_name};
+
+                # FALLBACK: Perform async fetch if not prefetched
                 return $inner->_fetch_relationship_async($rel_name, $rel_info, @args);
             };
         }
+    }
+}
+
+sub _install_prefetch_accessors {
+    my ($self) = @_;
+    my $class  = ref($self);
+    my $source = $self->result_source;
+
+    foreach my $rel_name (keys %{$self->{_relationship_data} // {}}) {
+        my $rel_info = $source->relationship_info($rel_name);
+        next unless $rel_info;
+
+        no strict 'refs';
+        no warnings 'redefine';
+
+        *{"${class}::$rel_name"} = sub {
+            my ($inner_self) = @_;
+            my $data = $inner_self->{_relationship_data}{$rel_name};
+
+            # Check if this is a 'multi' (has_many) relationship
+            my $is_multi = ($rel_info->{attrs}{accessor} // '') eq 'multi';
+
+            if ($is_multi) {
+                # For 'multi', the prefetch logic in ResultSet.pm should have
+                # already converted the raw data into a ResultSet object.
+                # If it didn't, we fallback to a normal related_resultset.
+                return $data if Scalar::Util::blessed($data) && $data->isa('DBIx::Class::Async::ResultSet');
+                return $inner_self->related_resultset($rel_name);
+            }
+
+            # Handle Single relationships (belongs_to / user)
+            # This is what Order 3 and 4 need.
+            if (Scalar::Util::blessed($data)) {
+                return Future->done($data);
+            }
+            if (ref($data) eq 'HASH') {
+                my $rs = $inner_self->{_schema_instance}->resultset($rel_info->{source});
+                my $obj = $rs->new_result($data);
+                $inner_self->{_relationship_data}{$rel_name} = $obj;
+                return Future->done($obj);
+            }
+
+            # Fallback for singles
+            return Future->done($data) if defined $data;
+            return $inner_self->related_resultset($rel_name);
+        };
     }
 }
 

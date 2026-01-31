@@ -23,7 +23,7 @@ my $schema         = DBIx::Class::Async::Schema->connect(
     },
 );
 
-$schema->await($schema->deploy({ add_drop_table => 1 }));
+$schema->await($schema->deploy({ add_drop_table => 0 }));
 
 my @users = (
     { name => 'Alice',   email => 'alice@example.com',   active => 1 },
@@ -46,10 +46,9 @@ my $user_orders = {
 foreach my $user_id (sort keys %$user_orders) {
     my $user = $schema->resultset('User')->find($user_id)->get;
     foreach my $order (@{$user_orders->{$user_id}}) {
-        $user->create_related('orders', $order)->get;
+        my $order = $user->create_related('orders', $order)->get;
     }
 }
-
 
 my $user_rs = $schema->resultset('User');
 ok($user_rs, 'User resultset exists');

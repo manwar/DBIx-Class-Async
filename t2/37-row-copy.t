@@ -41,7 +41,7 @@ subtest 'Basic copy functionality' => sub {
     my $copy = $original->copy({ sku => unique_sku() })->get;
 
     ok(defined $copy, 'Copy was created');
-    isa_ok($copy, 'DBIx::Class::Async::Anon::TestSchema_Result_Product', 'Copy is correct type');
+    isa_ok($copy, 'DBIx::Class::Async::Row', 'Copy is correct type');
     isnt($copy->id, $original->id, 'Copy has different ID (auto-increment)');
     is($copy->name, $original->name, 'Name was copied');
     is($copy->price, $original->price, 'Price was copied');
@@ -190,7 +190,7 @@ subtest 'Copy returns Future' => sub {
         fail("Future resolution failed: $@");
     } else {
         ok(defined $copy, 'Future resolved to a copy');
-        isa_ok($copy, 'DBIx::Class::Async::Anon::TestSchema_Result_Product', 'Copy is correct type');
+        isa_ok($copy, 'DBIx::Class::Async::Row', 'Copy is correct type');
     }
 };
 

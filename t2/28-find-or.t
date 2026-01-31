@@ -35,7 +35,7 @@ $rs->create({
 subtest 'find_or_new logic' => sub {
     my $user_a = $rs->find_or_new({ name => 'ExistingUser' })->get;
 
-    isa_ok($user_a, 'DBIx::Class::Async::Anon::TestSchema_Result_User');
+    isa_ok($user_a, 'DBIx::Class::Async::Row');
     is($user_a->email, 'existing@example.com', 'Found existing record data');
     ok($user_a->in_storage, 'Existing record is flagged as in_storage');
 
