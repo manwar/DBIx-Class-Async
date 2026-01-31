@@ -106,8 +106,16 @@ sub copy {
         $data{$col} = $changes->{$col};
     }
 
-    # 4. Use the Async ResultSet to create
-    return $self->{async_db}->resultset($self->{source_name})->create(\%data);
+    # 4. Use the schema to create the copy
+    my $schema = $self->{_schema_instance};
+
+    unless ($schema) {
+        # If no schema instance, we need to get it from somewhere
+        # This shouldn't happen if Row was created properly
+        croak "Cannot copy: Row object has no schema instance reference";
+    }
+
+    return $schema->resultset($self->{_source_name})->create(\%data);
 }
 
 sub create_related {
