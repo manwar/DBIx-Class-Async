@@ -4,9 +4,7 @@ use strict;
 use warnings;
 
 use Test::More;
-use Test::Deep;
 use File::Temp;
-use Test::Exception;
 use IO::Async::Loop;
 use DBIx::Class::Async::Schema;
 
@@ -83,7 +81,6 @@ subtest 'populate - hashref format via resultset' => sub {
     is($users->[0]->name, 'Dave', 'First user is Dave');
     is($users->[1]->name, 'Eve', 'Second user is Eve');
 
-    # Verify in database
     my $count = $schema->resultset('User')->count->get;
     is($count, 2, 'Database has 2 users');
 
@@ -153,7 +150,6 @@ subtest 'populate - with relationships' => sub {
 
     reset_data();
 
-    # Create users first
     my $users = $schema->populate('User', [
         { name => 'Alice', email => 'alice@example.com', active => 1 },
         { name => 'Bob',   email => 'bob@example.com',   active => 1 },
@@ -356,4 +352,4 @@ subtest 'populate - comparison with multiple creates' => sub {
 
 $schema->disconnect;
 
-done_testing();
+done_testing;

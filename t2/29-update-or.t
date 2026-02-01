@@ -4,9 +4,7 @@ use strict;
 use warnings;
 
 use Test::More;
-use Test::Deep;
 use File::Temp;
-use Test::Exception;
 use IO::Async::Loop;
 use DBIx::Class::Async::Schema;
 
@@ -26,8 +24,6 @@ my $schema         = DBIx::Class::Async::Schema->connect(
 $schema->await($schema->deploy({ add_drop_table => 1 }));
 
 my $rs = $schema->resultset('User');
-
-# TEST: update_or_create logic
 
 subtest 'update_or_create logic' => sub {
     $rs->delete_all->get;

@@ -4,9 +4,7 @@ use strict;
 use warnings;
 
 use Test::More;
-use Test::Deep;
 use File::Temp;
-use Test::Exception;
 use IO::Async::Loop;
 use DBIx::Class::Async::Schema;
 
@@ -50,14 +48,12 @@ foreach my $user_id (sort keys %$user_orders) {
     }
 }
 
-
-my $user_count = $schema->resultset('User')->count->get;
+my $user_count  = $schema->resultset('User')->count->get;
 my $order_count = $schema->resultset('Order')->count->get;
 is($user_count, 2, 'Created 2 users');
 is($order_count, 4, 'Created 4 orders');
 
 subtest 'related_resultset - basic functionality' => sub {
-
     # Test that the method exists
     my $rs = $schema->resultset('Order');
     can_ok($rs, 'related_resultset');
@@ -77,7 +73,6 @@ subtest 'related_resultset - basic functionality' => sub {
 };
 
 subtest 'related_resultset - Order to User (belongs_to)' => sub {
-
     # Get orders with new status
     my $new_orders_rs = $schema->resultset('Order')
         ->search({ status => 'new' });
@@ -117,7 +112,6 @@ subtest 'related_resultset - Order to User (belongs_to)' => sub {
 };
 
 subtest 'related_resultset - User to Orders (has_many)' => sub {
-
     # Get active users
     my $active_users_rs = $schema->resultset('User')
         ->search({ active => 1 });
@@ -157,7 +151,6 @@ subtest 'related_resultset - User to Orders (has_many)' => sub {
 };
 
 subtest 'related_resultset - chaining searches' => sub {
-
     # Chain: pending orders -> users -> active only
     my $rs = eval {
         $schema->resultset('Order')
@@ -201,7 +194,6 @@ subtest 'related_resultset - chaining searches' => sub {
 };
 
 subtest 'related_resultset - error handling' => sub {
-
     my $rs = $schema->resultset('User');
 
     # Test invalid relationship name

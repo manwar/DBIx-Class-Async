@@ -18,10 +18,7 @@ my $schema         = DBIx::Class::Async::Schema->connect(
     "dbi:SQLite:dbname=$db_file", undef, undef, {},
     { workers => 2, schema_class => 'TestSchema', async_loop => $loop });
 
-# 1. Deploy and wait
 $schema->await($schema->deploy({ add_drop_table => 1 }));
-
-# 2. Seed the user (We must create it so find(1) has something to find!)
 my $row = {
     name     => 'Alice',
     age      => 20,
@@ -34,7 +31,6 @@ my $row = {
 my $rs = $schema->resultset('User');
 $schema->await($rs->create($row));
 
-# Test 1: Row object creation and basics
 subtest 'Row basics' => sub {
 
     my $user = $schema->await($rs->find(1));
@@ -58,7 +54,6 @@ subtest 'Row basics' => sub {
     ok($user->in_storage, 'Row is in storage');
 };
 
-# Test 2: Row update operations
 subtest 'Row updates' => sub {
 
     my $user   = $schema->await($rs->find(1));
@@ -81,7 +76,6 @@ subtest 'Row updates' => sub {
     is($updated->email, 'bob.updated@example.com', 'Email persisted after discard_changes');
 };
 
-# Test 3: Row delete operations
 subtest 'Row deletion' => sub {
 
     my $row = {
@@ -108,7 +102,6 @@ subtest 'Row deletion' => sub {
     ok(!$user->in_storage, 'Row object knows it\'s not in storage');
 };
 
-# Test 4: Relationships
 subtest 'Row relationships' => sub {
 
     my $user_rs  = $schema->resultset('User');
@@ -160,7 +153,6 @@ subtest 'Row relationships' => sub {
     is_deeply($data1, $data2, 'The data retrieved via the cached ResultSet is identical');
 };
 
-# Test 5: Error handling
 subtest 'Row errors' => sub {
 
     my $user = $schema->await($rs->find(1));
@@ -204,7 +196,6 @@ subtest 'Row errors' => sub {
     ok(!$result, 'Delete already deleted returns false');
 };
 
-# Test 6: Row inflation (if implemented)
 subtest 'Row inflation' => sub {
 
     my $rs   = $schema->resultset('User');

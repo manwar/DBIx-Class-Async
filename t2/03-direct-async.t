@@ -2,41 +2,40 @@
 
 use strict;
 use warnings;
-use utf8;
 
 use Test::More;
 use Test::Exception;
 
-use FindBin qw($Bin);
-use lib "$Bin/../lib";
-use lib "$Bin/lib";
+use lib 't/lib';
 
 use DBI;
+use File::Temp;
 use TestSchema;
 use IO::Async::Loop;
 use DBIx::Class::Async::Schema;
 
-use File::Temp;
+my $loop           = IO::Async::Loop->new;
 my ($fh, $db_file) = File::Temp::tempfile(SUFFIX => '.db', UNLINK => 1);
+my $schema_class   = 'TestSchema';
+my $schema         = DBIx::Class::Async::Schema->connect(
+    "dbi:SQLite:dbname=$db_file", undef, undef, {},
+    { workers      => 2,
+      schema_class => $schema_class,
+      async_loop   => $loop,
+      cache_ttl    => 60,
+    },
+);
 
-my $schema_setup = TestSchema->connect("dbi:SQLite:dbname=$db_file");
-$schema_setup->deploy({ add_drop_table => 1 });
+$schema->await($schema->deploy({ add_drop_table => 1 }));
+$schema->disconnect;
 
-my $loop = IO::Async::Loop->new;
-
-# Test 1: Schema-based connection (Replaces Direct Async connection)
 subtest 'Schema-based async connection' => sub {
-
-    my $schema;
     lives_ok {
         $schema = DBIx::Class::Async::Schema->connect(
-            "dbi:SQLite:dbname=$db_file",
-            undef,
-            undef,
-            {},
+            "dbi:SQLite:dbname=$db_file", undef, undef, {},
             {
                 workers      => 2,
-                schema_class => 'TestSchema',
+                schema_class => $schema_class,
                 async_loop   => $loop
             }
         );
@@ -44,40 +43,48 @@ subtest 'Schema-based async connection' => sub {
 
     isa_ok($schema, 'DBIx::Class::Async::Schema');
 
-    # Mapping 'search' to ResultSet 'search' (returning future)
-    my $search_future = $schema->resultset('User')->search({ balance => { '>' => 100 } })->all;
+    my $search_future = $schema->resultset('User')
+                               ->search({ active => 1 })
+                               ->all;
     isa_ok($search_future, 'IO::Async::Future', 'all() returns a Future');
 
     my $users = $search_future->get;
     isa_ok($users, 'ARRAY');
     is(scalar @$users, 0, 'No users initially');
+
+    $schema->disconnect;
 };
 
-# Test 2: Create, Find, Update, and Count via ResultSet
 subtest 'ResultSet operations' => sub {
-    # Ensure a fresh loop and schema for this subtest
+    $schema = DBIx::Class::Async::Schema->connect(
+        "dbi:SQLite:dbname=$db_file", undef, undef, {},
+        {
+            workers      => 2,
+            schema_class => $schema_class,
+            async_loop   => $loop
+        });
+
+    # 1. Ensure a fresh loop and schema for this subtest
     my $schema = DBIx::Class::Async::Schema->connect(
-        "dbi:SQLite:dbname=$db_file",
-        undef, undef, {},
-        { workers => 2, schema_class => 'TestSchema', async_loop => $loop }
-    );
+        "dbi:SQLite:dbname=$db_file", undef, undef, {},
+        {
+            workers      => 2,
+            schema_class => $schema_class,
+            async_loop   => $loop
+        });
 
-    # Use eval/catch logic for the 'get' calls to see meaningful errors
-    # instead of just crashing with 255.
-
-    # 1. Create user
     my $user;
     eval {
-        $user = $schema->resultset('User')->create({
-            name   => 'Direct Test',
-            email  => 'direct@example.com',
-            active => 1,
-            # balance => 100, # Uncomment this once the column exists in Schema!
-        })->get;
+        $user = $schema->resultset('User')
+                       ->create({
+                        name   => 'Direct Test',
+                        email  => 'direct@example.com',
+                        active => 1 })
+                       ->get;
     };
     if ($@) {
         fail("Create failed: $@");
-        return; # Skip rest of subtest if we can't create
+        return;
     }
 
     isa_ok($user, 'HASH', 'create returns a deflated hashref');
@@ -105,7 +112,7 @@ subtest 'ResultSet operations' => sub {
     };
     ok(!$@, 'Update operation executed without exception') or diag("Update error: $@");
 
-    # 4. Verification: find again to confirm persistence
+    # 4. Find again to confirm persistence
     my $refetched = eval { $schema->resultset('User')->find($user->id)->get };
     if ($refetched) {
         is($refetched->{name}, 'Updated Direct', 'Name update persisted');
@@ -119,7 +126,7 @@ subtest 'ResultSet operations' => sub {
     # 6. Execute search and get the ARRAY of objects
     my $inactive_users = $schema->resultset('User')->search({ active => 0 })->all->get;
 
-    # 7. Safety check: make sure we actually got an array with an element
+    # 7. Make sure we actually got an array with an element
     ok(defined $inactive_users && scalar @$inactive_users > 0, "Search returned results");
 
     # 8. Access using method syntax
@@ -127,7 +134,7 @@ subtest 'ResultSet operations' => sub {
         is($inactive_users->[0]->name, 'Updated Direct', 'Search found the inactive user');
     }
 
-    done_testing();
+    $schema->disconnect;
 };
 
-done_testing();
+done_testing;

@@ -2,15 +2,12 @@
 
 use strict;
 use warnings;
-use utf8;
 
 use File::Temp;
 use Test::More;
 use Test::Exception;
 
-use FindBin qw($Bin);
-use lib "$Bin/../lib";
-use lib "$Bin/lib";
+use lib "t/lib";
 
 use DBI;
 use TestSchema;
@@ -19,37 +16,28 @@ use DBIx::Class::Async;
 use DBIx::Class::Async::Schema;
 
 my ($fh, $db_file) = File::Temp::tempfile(SUFFIX => '.db', UNLINK => 1);
+my $schema_class   = 'TestSchema';
+my $loop           = IO::Async::Loop->new;
 
-# 1. Initialise the Async Schema
 my $schema = DBIx::Class::Async::Schema->connect(
-    "dbi:SQLite:dbname=$db_file",
-    undef, undef, {},
-    { workers => 2, schema_class => 'TestSchema' }
-);
+    "dbi:SQLite:dbname=$db_file", undef, undef, {},
+    { workers      => 2,
+      schema_class => $schema_class,
+      loop         => $loop,
+    });
 
-# 2. Get the loop from the internal async_db object
-my $loop = $schema->{_async_db}->{_loop};
+$schema->await($schema->deploy);
 
-# 3. Deploy automatically!
-$loop->await($schema->deploy);
-
-# Test 1: Basic schema connection
 subtest 'Basic schema connection' => sub {
-
-    my $loop = IO::Async::Loop->new;
     my $schema;
     lives_ok {
         $schema = DBIx::Class::Async::Schema->connect(
-            "dbi:SQLite:dbname=$db_file",
-            undef,
-            undef,
-            {},
+            "dbi:SQLite:dbname=$db_file", undef, undef, {},
             {
                 workers      => 2,
-                schema_class => 'TestSchema',
+                schema_class => $schema_class,
                 loop         => $loop
-            }
-        );
+            });
     } 'Schema connects successfully';
 
     isa_ok($schema, 'DBIx::Class::Async::Schema');
@@ -63,21 +51,14 @@ subtest 'Basic schema connection' => sub {
     lives_ok { $schema->disconnect } 'Can disconnect';
 };
 
-# Test 2: Simple user CRUD
 subtest 'Simple user CRUD' => sub {
-
-    my $loop   = IO::Async::Loop->new;
     my $schema = DBIx::Class::Async::Schema->connect(
-        "dbi:SQLite:dbname=$db_file",
-        undef,
-        undef,
-        {},
+        "dbi:SQLite:dbname=$db_file", undef, undef, {},
         {
             workers      => 2,
-            schema_class => 'TestSchema',
+            schema_class => $schema_class,
             loop         => $loop
-        }
-    );
+        });
 
     my $user_rs = $schema->resultset('User');
     isa_ok($user_rs, 'DBIx::Class::Async::ResultSet');
@@ -109,34 +90,30 @@ subtest 'Simple user CRUD' => sub {
     $schema->disconnect;
 };
 
-# Test 3: Order operations
 subtest 'Order operations' => sub {
-
-    my $loop   = IO::Async::Loop->new;
     my $schema = DBIx::Class::Async::Schema->connect(
-        "dbi:SQLite:dbname=$db_file",
-        undef,
-        undef,
-        {},
+        "dbi:SQLite:dbname=$db_file", undef, undef, {},
         {
             workers      => 2,
-            schema_class => 'TestSchema',
+            schema_class => $schema_class,
             loop         => $loop
         }
     );
 
     # Create user
-    my $user = $schema->resultset('User')->create({
-        name  => 'Order User',
-        email => 'order@example.com',
-    })->get;
+    my $user = $schema->resultset('User')
+                      ->create({
+                        name  => 'Order User',
+                        email => 'order@example.com' })
+                      ->get;
 
     # Create order
-    my $order = $schema->resultset('Order')->create({
-        user_id => $user->id,
-        amount  => 49.99,
-        status  => 'paid',
-    })->get;
+    my $order = $schema->resultset('Order')
+                       ->create({
+                        user_id => $user->id,
+                        amount  => 49.99,
+                        status  => 'paid' })
+                       ->get;
 
     isa_ok($order, 'DBIx::Class::Async::Row');
     is($order->amount, 49.99);
@@ -155,29 +132,27 @@ subtest 'Order operations' => sub {
     $schema->disconnect;
 };
 
-# Test 4: Search and count
 subtest 'Search and count' => sub {
-
-    my $loop   = IO::Async::Loop->new;
     my $schema = DBIx::Class::Async::Schema->connect(
-        "dbi:SQLite:dbname=$db_file",
-        undef,
-        undef,
-        {},
+        "dbi:SQLite:dbname=$db_file", undef, undef, {},
         {
             workers      => 2,
-            schema_class => 'TestSchema',
+            schema_class => $schema_class,
             loop         => $loop
-        }
-    );
+        });
 
-    my $user_rs = $schema->resultset('User');
-
-    my $count_before = $user_rs->count->get;  # count() returns Future, so we need ->get
+    my $user_rs      = $schema->resultset('User');
+    my $count_before = $user_rs->count->get;
 
     # Create test data
-    $user_rs->create({ name => 'Search Test 1', email => 's1@test.com', active => 1 })->get;
-    $user_rs->create({ name => 'Search Test 2', email => 's2@test.com', active => 0 })->get;
+    $user_rs->create({
+        name   => 'Search Test 1',
+        email  => 's1@test.com',
+        active => 1 })->get;
+    $user_rs->create({
+        name   => 'Search Test 2',
+        email  => 's2@test.com',
+        active => 0 })->get;
 
     my $count_after = $user_rs->count->get;
     is($count_after, $count_before + 2, 'Count increased');
@@ -197,8 +172,4 @@ subtest 'Search and count' => sub {
     $schema->disconnect;
 };
 
-END {
-    unlink $db_file if -e $db_file;
-}
-
-done_testing();
+done_testing;

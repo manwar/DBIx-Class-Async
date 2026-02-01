@@ -4,9 +4,7 @@ use strict;
 use warnings;
 
 use Test::More;
-use Test::Deep;
 use File::Temp;
-use Test::Exception;
 use IO::Async::Loop;
 use DBIx::Class::Async::Schema;
 
@@ -49,13 +47,11 @@ my $chained_count = $rs->search_literal('active = ?', 1)
 is($chained_count, 1, "Chaining standard search() after search_literal() works");
 
 # Test count_rs (Standalone execution)
-# Note: count_rs returns a ResultSet, so we await single
 my $cnt_rs  = $rs->search({ active => 1 })->count_rs;
 my $cnt_row = $cnt_rs->single_future->get;
 is($cnt_row->get_column('count'), 2, "count_rs works as a standalone executed ResultSet");
 
 # Test count_rs (Subquery usage via as_query)
-# We want to find users whose ID is in the set of active user IDs
 my $id_subquery = $rs->search(
     { active => 1 },
     { select => ['id'] }

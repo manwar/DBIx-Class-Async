@@ -49,4 +49,4 @@ ok(!defined $rs->get_cache, "Cache is now empty");
 
 $schema->disconnect;
 
-done_testing();
+done_testing;

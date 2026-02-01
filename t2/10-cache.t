@@ -4,9 +4,7 @@ use strict;
 use warnings;
 
 use Test::More;
-use Test::Deep;
 use File::Temp;
-use Test::Exception;
 use IO::Async::Loop;
 use DBIx::Class::Async::Schema;
 
@@ -14,19 +12,18 @@ use lib 't/lib';
 
 my $loop           = IO::Async::Loop->new;
 my ($fh, $db_file) = File::Temp::tempfile(SUFFIX => '.db', UNLINK => 1);
+my $schema_class   = 'TestSchema';
 my $schema         = DBIx::Class::Async::Schema->connect(
     "dbi:SQLite:dbname=$db_file", undef, undef, {},
     { workers      => 2,
-      schema_class => 'TestSchema',
+      schema_class => $schema_class,
       async_loop   => $loop,
       cache_ttl    => 60,
     },
 );
 
-# 1. Deploy and wait
 $schema->await($schema->deploy({ add_drop_table => 1 }));
 
-# 2. Seed the user
 my $row = {
     name     => 'Alice',
     age      => 20,
@@ -50,19 +47,20 @@ is(scalar @$results2, scalar @$results1, 'cached results have same count');
 cmp_ok($schema->cache_hits,   '>=', 1, 'cache hits recorded');
 cmp_ok($schema->cache_misses, '>=', 1, 'cache misses recorded');
 
-# 3. Test with cache disabled
+# Test with cache disabled
 my $schema_no_cache = DBIx::Class::Async::Schema->connect(
     "dbi:SQLite:dbname=$db_file", undef, undef, {},
-    { workers      => 2,
-      schema_class => 'TestSchema',
-      async_loop   => $loop,
-      cache_ttl    => 0,
-    },
-);
+    {
+        workers      => 2,
+        schema_class => $schema_class,
+        async_loop   => $loop,
+        cache_ttl    => 0,
+    });
 
 my $results3 = $schema_no_cache->resultset('User')
                                ->search({ active => 1 })
                                ->all;
+
 my $rows = $schema_no_cache->await($results3);
 ok(scalar @$rows, 'search works with cache disabled');
 

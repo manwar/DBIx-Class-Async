@@ -23,10 +23,8 @@ my $schema         = DBIx::Class::Async::Schema->connect(
     },
 );
 
-# 1. Deploy and wait
 $schema->await($schema->deploy({ add_drop_table => 1 }));
 
-# 2. Seed the user
 my $row_1 = {
     name     => 'Alice',
     age      => 20,
@@ -49,10 +47,7 @@ my $rs = $schema->resultset('User');
 $schema->await($rs->create($row_1));
 $schema->await($rs->create($row_2));
 
-# Test 1: ResultSet creation and basics
 subtest 'ResultSet basics' => sub {
-
-    my $rs = $schema->resultset('User');
     isa_ok($rs, 'DBIx::Class::Async::ResultSet', 'ResultSet object');
 
     is($rs->source_name, 'User', 'Correct source name');
@@ -73,11 +68,7 @@ subtest 'ResultSet basics' => sub {
     isnt($rs, $rs2, 'Search returns new instance');
 };
 
-# Test 2: Search operations
 subtest 'Search operations' => sub {
-
-    my $rs = $schema->resultset('User');
-
     my $search_rs = $rs->search({ active => 1 });
     my $future    = $search_rs->all_future;
     isa_ok($future, 'Future', 'all_future() returns Future');
@@ -116,11 +107,7 @@ subtest 'Search operations' => sub {
     is(scalar @$empty_results, 0, 'No results for impossible condition');
 };
 
-# Test 3: Find operations
 subtest 'Find operations' => sub {
-
-    my $rs = $schema->resultset('User');
-
     # Find existing using single_future (for single row)
     my $user_future = $rs->find(1);
     isa_ok($user_future, 'Future', 'find() returns Future');
@@ -144,10 +131,7 @@ subtest 'Find operations' => sub {
     is($single_user->name, 'Alice', 'single_future() works');
 };
 
-# Test 4: Create operations
 subtest 'Create operations' => sub {
-
-    my $rs = $schema->resultset('User');
     my $new_user = {
         name   => 'Eve',
         email  => 'eve@example.com',
@@ -167,10 +151,7 @@ subtest 'Create operations' => sub {
     is($found->email, 'eve@example.com', 'User email matches in database');
 };
 
-# Test 5: Sync iteration (if you added next() method)
 subtest 'Sync iteration with next()' => sub {
-
-    my $rs = $schema->resultset('User');
     if (!$rs->can('next')) {
         plan skip_all => 'next() method not implemented';
     }
@@ -186,7 +167,6 @@ subtest 'Sync iteration with next()' => sub {
     $search_rs->reset;  # Ensure we are at position 0
     my $sync_count = 0;
 
-    # next() returns a Future, so we must ->get it to see the result
     while (my $f = $search_rs->next) {
         my $row = $f->get;
         last unless defined $row;
@@ -200,7 +180,6 @@ subtest 'Sync iteration with next()' => sub {
     my $first_f = $search_rs->next;
     ok($first_f && $first_f->get, 'reset() allows re-iteration');
 
-    # Test get() (if implemented as a sync shortcut)
     if ($search_rs->can('get')) {
         my $all = $search_rs->get;
         isa_ok($all, 'ARRAY');
@@ -208,11 +187,7 @@ subtest 'Sync iteration with next()' => sub {
     }
 };
 
-# Test 6: Update operations (update to use async)
 subtest 'Update operations' => sub {
-
-    my $rs = $schema->resultset('User');
-
     my $user = $rs->create({ name => 'Dave', email => 'dave@ex.com' })->get;
     ok($user->id, "User was created with ID: " . $user->id);
 
@@ -238,4 +213,4 @@ subtest 'Update operations' => sub {
 
 $schema->disconnect;
 
-done_testing();
+done_testing;

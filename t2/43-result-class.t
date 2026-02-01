@@ -2,6 +2,7 @@
 
 use strict;
 use warnings;
+
 use Test::More;
 use IO::Async::Loop;
 use File::Temp qw(tempfile);
@@ -10,14 +11,13 @@ use DBIx::Class::Async::Schema;
 use lib 't/lib';
 use TestSchema;
 
-my $loop = IO::Async::Loop->new;
+my $loop           = IO::Async::Loop->new;
 my ($fh, $db_file) = tempfile(UNLINK => 1);
-
-my $schema = DBIx::Class::Async::Schema->connect(
-    "dbi:SQLite:dbname=$db_file",
-    undef, undef, { RaiseError => 1 },
-    { workers => 1, schema_class => 'TestSchema', loop => $loop }
-);
+my $schema         = DBIx::Class::Async::Schema->connect(
+    "dbi:SQLite:dbname=$db_file", undef, undef, {},
+    { workers      => 1,
+      schema_class => 'TestSchema',
+      loop         => $loop });
 
 my $rs = $schema->resultset('User');
 
@@ -56,4 +56,6 @@ subtest "Chaining behavior" => sub {
     is($rs_next->result_class, 'My::Custom::User', "result_class persists across searches");
 };
 
-done_testing();
+$schema->disconnect;
+
+done_testing;

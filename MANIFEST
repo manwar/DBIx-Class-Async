@@ -14,11 +14,9 @@ MANIFEST
 MANIFEST.SKIP
 README
 t/00-load.t
-t/01-schema.t
 t/03-direct-async.t
 t/04-basic.t
 t/05-simple-get.t
-t/06-search-with-attr.t
 t/09-row.t
 t/10-cache.t
 t/11-resultset.t
