@@ -1,58 +1,53 @@
+#!/usr/bin/env perl
 
 use strict;
 use warnings;
+
 use Test::More;
-use File::Temp qw(tempfile);
+use Test::Deep;
+use File::Temp;
+use Test::Exception;
 use IO::Async::Loop;
-use lib 'lib';
-use TestSchema;
 use DBIx::Class::Async::Schema;
 
-BEGIN {
-    $SIG{__WARN__} = sub {};
-}
+use lib 't/lib';
 
-# 1. Setup real temporary SQLite database
-my ($fh, $filename) = tempfile(SUFFIX => '.db', UNLINK => 1);
-my $dsn = "dbi:SQLite:dbname=$filename";
+my $loop           = IO::Async::Loop->new;
+my ($fh, $db_file) = File::Temp::tempfile(SUFFIX => '.db', UNLINK => 1);
+my $schema         = DBIx::Class::Async::Schema->connect(
+    "dbi:SQLite:dbname=$db_file", undef, undef, {},
+    { workers      => 2,
+      schema_class => 'TestSchema',
+      async_loop   => $loop,
+      cache_ttl    => 60,
+    },
+);
 
-my $base_schema = TestSchema->connect($dsn);
-$base_schema->deploy();
+$schema->await($schema->deploy({ add_drop_table => 1 }));
 
 # Create user
-my $user = $base_schema->resultset('User')->create({
+my $user = $schema->resultset('User')->create({
     id     => 1,
     name   => 'BottomUp User',
     email  => 'bu@test.com',
     active => 1,
-});
+})->get;
 
 # Create some orders for the user
-$base_schema->resultset('Order')->create({
+$schema->resultset('Order')->create({
     user_id => 1,
     status  => 'pending',
     amount  => 100.00,
-});
+})->get;
 
-$base_schema->resultset('Order')->create({
+$schema->resultset('Order')->create({
     user_id => 1,
     status  => 'completed',
     amount  => 50.00,
-});
-
-$base_schema->storage->disconnect;
-
-
-# 2. Initialize the Async Engine
-my $loop = IO::Async::Loop->new;
-my $async_schema = DBIx::Class::Async::Schema->connect($dsn, {
-    schema_class => 'TestSchema',
-    async_loop   => $loop,
-    workers      => 2,
-});
+})->get;
 
 subtest 'Relationship Pivoting (search_related)' => sub {
-    my $user_future = $async_schema->resultset('User')->find(1);
+    my $user_future = $schema->resultset('User')->find(1);
     my $user = $user_future->get;
 
     my $orders_rs = eval { $user->search_related_rs('orders') };
@@ -75,7 +70,7 @@ subtest 'Relationship Pivoting (search_related)' => sub {
 };
 
 subtest 'Chained search_related' => sub {
-    my $user = $async_schema->resultset('User')->find(1)->get;
+    my $user = $schema->resultset('User')->find(1)->get;
 
     my $recent_orders = $user->search_related('orders',
         { status   => 'pending' },
@@ -88,4 +83,4 @@ subtest 'Chained search_related' => sub {
     is($recent_orders->[0]->status, 'pending', "Order status is pending");
 };
 
-done_testing();
+done_testing;

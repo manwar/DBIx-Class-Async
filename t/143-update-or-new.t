@@ -1,40 +1,38 @@
+#!/usr/bin/env perl
 
 use strict;
 use warnings;
+
 use Test::More;
-use File::Temp qw(tempfile);
+use Test::Deep;
+use File::Temp;
+use Test::Exception;
 use IO::Async::Loop;
-use lib 'lib';
-use TestSchema;
 use DBIx::Class::Async::Schema;
 
-BEGIN {
-    $SIG{__WARN__} = sub {};
-}
+use lib 't/lib';
 
-# 1. Setup real temporary SQLite database
-my ($fh, $filename) = tempfile(SUFFIX => '.db', UNLINK => 1);
-my $dsn = "dbi:SQLite:dbname=$filename";
+my $loop           = IO::Async::Loop->new;
+my ($fh, $db_file) = File::Temp::tempfile(SUFFIX => '.db', UNLINK => 1);
+my $schema         = DBIx::Class::Async::Schema->connect(
+    "dbi:SQLite:dbname=$db_file", undef, undef, {},
+    { workers      => 2,
+      schema_class => 'TestSchema',
+      async_loop   => $loop,
+      cache_ttl    => 60,
+    },
+);
 
-# Initialize and seed the DB so all_future has something to find
-my $base_schema = TestSchema->connect($dsn);
-$base_schema->deploy();
-$base_schema->resultset('User')->create({
+$schema->await($schema->deploy({ add_drop_table => 1 }));
+
+$schema->resultset('User')->create({
     id    => 1,
     name  => 'BottomUp User',
     email => 'bu@test.com'
-});
-
-# 2. Initialize the Async Engine
-my $loop = IO::Async::Loop->new;
-my $async_schema = DBIx::Class::Async::Schema->connect($dsn, {
-    schema_class => 'TestSchema',
-    async_loop   => $loop,
-    workers      => 2,
-});
+})->get;
 
 subtest 'Debug Lookup' => sub {
-    my $rs = $async_schema->resultset('User');
+    my $rs = $schema->resultset('User');
     my $data = { 'me.email' => 'test@test.com', name => 'Foo' };
 
     my $lookup = $rs->_extract_unique_lookup($data, {});
@@ -47,7 +45,7 @@ subtest 'Debug Lookup' => sub {
 };
 
 subtest 'ResultSet update_or_new logic' => sub {
-    my $rs = $async_schema->resultset('User');
+    my $rs = $schema->resultset('User');
     my $email = 'new_test@example.com';
 
     # 1. Test the "New" path
@@ -75,4 +73,4 @@ subtest 'ResultSet update_or_new logic' => sub {
     is($updated_row->in_storage, 1, 'Updated row is in storage');
 };
 
-done_testing();
+done_testing;

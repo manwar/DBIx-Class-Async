@@ -1,40 +1,38 @@
+#!/usr/bin/env perl
 
 use strict;
 use warnings;
+
 use Test::More;
-use File::Temp qw(tempfile);
+use Test::Deep;
+use File::Temp;
+use Test::Exception;
 use IO::Async::Loop;
-use lib 'lib';
-use TestSchema;
 use DBIx::Class::Async::Schema;
 
-BEGIN {
-    $SIG{__WARN__} = sub {};
-}
+use lib 't/lib';
 
-# 1. Setup real temporary SQLite database
-my ($fh, $filename) = tempfile(SUFFIX => '.db', UNLINK => 1);
-my $dsn = "dbi:SQLite:dbname=$filename";
+my $loop           = IO::Async::Loop->new;
+my ($fh, $db_file) = File::Temp::tempfile(SUFFIX => '.db', UNLINK => 1);
+my $schema         = DBIx::Class::Async::Schema->connect(
+    "dbi:SQLite:dbname=$db_file", undef, undef, {},
+    { workers      => 2,
+      schema_class => 'TestSchema',
+      async_loop   => $loop,
+      cache_ttl    => 60,
+    },
+);
 
-# Initialize and seed the DB so all_future has something to find
-my $base_schema = TestSchema->connect($dsn);
-$base_schema->deploy();
-$base_schema->resultset('User')->create({
+$schema->await($schema->deploy({ add_drop_table => 1 }));
+
+$schema->resultset('User')->create({
     id    => 1,
     name  => 'BottomUp User',
     email => 'bu@test.com'
-});
-
-# 2. Initialize the Async Engine
-my $loop = IO::Async::Loop->new;
-my $async_schema = DBIx::Class::Async::Schema->connect($dsn, {
-    schema_class => 'TestSchema',
-    async_loop   => $loop,
-    workers      => 2,
-});
+})->get;
 
 subtest 'ResultSet find() - Success' => sub {
-    my $rs = $async_schema->resultset('User');
+    my $rs = $schema->resultset('User');
 
     # 1. Setup
     my $name = "Finder";
@@ -50,7 +48,7 @@ subtest 'ResultSet find() - Success' => sub {
 };
 
 subtest 'ResultSet find() - No result' => sub {
-    my $rs = $async_schema->resultset('User');
+    my $rs = $schema->resultset('User');
 
     # Use an ID that definitely doesn't exist
     my $user = $rs->find(999_999_999)->get;
@@ -59,7 +57,7 @@ subtest 'ResultSet find() - No result' => sub {
 };
 
 subtest 'The Chain: find()->then(delete)' => sub {
-    my $rs = $async_schema->resultset('User');
+    my $rs = $schema->resultset('User');
     my $temp_user = $rs->create({ name => 'To Be Deleted' })->get;
     my $id = $temp_user->id;
 
@@ -80,7 +78,7 @@ subtest 'The Chain: find()->then(delete)' => sub {
 };
 
 subtest 'Testing find_or_new' => sub {
-    my $rs = $async_schema->resultset('User');
+    my $rs = $schema->resultset('User');
     my $initial_queries = $rs->stats('queries');
     my $new_name = "New User " . time;
 
@@ -103,7 +101,7 @@ subtest 'Testing find_or_new' => sub {
 };
 
 subtest 'Testing find_or_create' => sub {
-    my $rs = $async_schema->resultset('User');
+    my $rs = $schema->resultset('User');
     my $initial_queries = $rs->stats('queries');
     my $unique_name = "Created User " . time;
 

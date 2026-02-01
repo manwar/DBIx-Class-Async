@@ -3,6 +3,9 @@
 use strict;
 use warnings;
 use Test::More;
+
+use lib 't/lib';
+
 use IO::Async::Loop;
 use DBIx::Class::Async::Schema;
 
@@ -20,7 +23,7 @@ use DBIx::Class::Async::Schema;
 
 # 2. Setup Schema
 my $loop = IO::Async::Loop->new;
-my $async_schema = DBIx::Class::Async::Schema->connect(
+my $schema = DBIx::Class::Async::Schema->connect(
     "dbi:SQLite::memory:", undef, undef,
     { schema_class => 'TestSchema', async_loop => $loop }
 );
@@ -28,15 +31,15 @@ my $async_schema = DBIx::Class::Async::Schema->connect(
 subtest "Manual Class Registration" => sub {
     # 3. Test the ported register_class method
     # This should load the class and call register_source internally
-    eval { $async_schema->register_class('ManualUser', 'My::Manual::User') };
+    eval { $schema->register_class('ManualUser', 'My::Manual::User') };
     ok(!$@, "register_class executed without error") or diag $@;
 
     # 4. Verify Metadata in Parent
-    is($async_schema->class('ManualUser'), 'My::Manual::User',
+    is($schema->class('ManualUser'), 'My::Manual::User',
        "Schema correctly mapped 'ManualUser' to the class string");
 
     # 5. Verify ResultSet Creation
-    my $rs = eval { $async_schema->resultset('ManualUser') };
+    my $rs = eval { $schema->resultset('ManualUser') };
     ok($rs, "Created ResultSet for the manually registered class");
     isa_ok($rs, 'DBIx::Class::Async::ResultSet');
 
@@ -46,4 +49,4 @@ subtest "Manual Class Registration" => sub {
     ok($source->has_column('name'), "ResultSource has the correct columns");
 };
 
-done_testing();
+done_testing;

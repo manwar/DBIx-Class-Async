@@ -1,46 +1,43 @@
+#!/usr/bin/env perl
+
 use strict;
 use warnings;
+
 use Test::More;
+use Test::Deep;
+use File::Temp;
+use Test::Exception;
 use IO::Async::Loop;
-use File::Temp qw(tempfile);
-use TestSchema;
 use DBIx::Class::Async::Schema;
 
-BEGIN {
-    $SIG{__WARN__} = sub {};
-}
+use lib 't/lib';
 
-# 1. Setup the physical environment
-my $loop = IO::Async::Loop->new;
-my ($fh, $db_file) = tempfile(SUFFIX => '.db', UNLINK => 1);
-close $fh;
-my $dsn = "dbi:SQLite:dbname=$db_file";
+my $loop           = IO::Async::Loop->new;
+my ($fh, $db_file) = File::Temp::tempfile(SUFFIX => '.db', UNLINK => 1);
+my $schema         = DBIx::Class::Async::Schema->connect(
+    "dbi:SQLite:dbname=$db_file", undef, undef, {},
+    { workers      => 2,
+      schema_class => 'TestSchema',
+      async_loop   => $loop,
+      cache_ttl    => 60,
+    },
+);
 
-note "Database file: $db_file";
+$schema->await($schema->deploy({ add_drop_table => 1 }));
 
-# 2. Deploy the database (Synchronously, just for setup)
-my $setup_schema = TestSchema->connect($dsn);
-
-# 1. Setup sample data
-$setup_schema->deploy;
-$setup_schema->resultset('User')->create({
+$schema->resultset('User')->create({
     name => 'Alice',
     email => 'alice@test.com',
     active => 1
-});
-$setup_schema->resultset('User')->create({
+})->get;
+
+$schema->resultset('User')->create({
     name => 'Bob',
     email => 'bob@test.com',
     active => 1
-});
+})->get;
 
-my $async_schema = DBIx::Class::Async::Schema->connect($dsn, {
-    schema_class => 'TestSchema',
-    loop         => $loop,  # ← Use 'loop' not 'async_loop'
-    workers      => 2,
-});
-
-my $rs = $async_schema->resultset('User')
+my $rs = $schema->resultset('User')
                 ->search({ active => 1 })
                 ->search({ name => 'Alice' });
 
@@ -51,7 +48,7 @@ is_deeply($rs->{_cond}, { -and => [ { active => 1 }, { name => 'Alice' } ] }, 'C
 my $future = $rs->all();
 
 # Wait for the worker to finish
-$loop->await($future);
+$schema->await($future);
 my $results = $future->get;
 
 is(ref($results), 'ARRAY', 'Worker returned an arrayref');
@@ -59,4 +56,4 @@ is(scalar @$results, 1, 'Correctly filtered to 1 result');
 is($results->[0]{name}, 'Alice', 'Data is correct');
 is($results->[0]{email}, 'alice@test.com', 'Email matches');
 
-done_testing();
+done_testing;

@@ -222,7 +222,7 @@ sub discard_changes {
 
     # 2. Fetch fresh data using the new re-anchored design
     # We use find($id) which returns a Future containing a new Row object
-    return $self->_spawn_rs->find($id)->then(sub {
+    return $self->_spawn_rs->search({ $pk_col => $id })->first->then(sub {
         my ($fresh_row) = @_;
 
         # In the new design, find() returns undef or a Row object

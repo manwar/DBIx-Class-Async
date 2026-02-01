@@ -1,40 +1,38 @@
+#!/usr/bin/env perl
 
 use strict;
 use warnings;
+
 use Test::More;
-use File::Temp qw(tempfile);
+use Test::Deep;
+use File::Temp;
+use Test::Exception;
 use IO::Async::Loop;
-use lib 'lib';
-use TestSchema;
 use DBIx::Class::Async::Schema;
 
-BEGIN {
-    $SIG{__WARN__} = sub {};
-}
+use lib 't/lib';
 
-# 1. Setup real temporary SQLite database
-my ($fh, $filename) = tempfile(SUFFIX => '.db', UNLINK => 1);
-my $dsn = "dbi:SQLite:dbname=$filename";
+my $loop           = IO::Async::Loop->new;
+my ($fh, $db_file) = File::Temp::tempfile(SUFFIX => '.db', UNLINK => 1);
+my $schema         = DBIx::Class::Async::Schema->connect(
+    "dbi:SQLite:dbname=$db_file", undef, undef, {},
+    { workers      => 2,
+      schema_class => 'TestSchema',
+      async_loop   => $loop,
+      cache_ttl    => 60,
+    },
+);
 
-# Initialize and seed the DB so all_future has something to find
-my $base_schema = TestSchema->connect($dsn);
-$base_schema->deploy();
-$base_schema->resultset('User')->create({
+$schema->await($schema->deploy({ add_drop_table => 1 }));
+
+$schema->resultset('User')->create({
     id    => 1,
     name  => 'BottomUp User',
     email => 'bu@test.com'
-});
-
-# 2. Initialize the Async Engine
-my $loop = IO::Async::Loop->new;
-my $async_schema = DBIx::Class::Async::Schema->connect($dsn, {
-    schema_class => 'TestSchema',
-    async_loop   => $loop,
-    workers      => 2,
-});
+})->get;
 
 subtest 'Row Object update() - Existing Record' => sub {
-    my $rs = $async_schema->resultset('User');
+    my $rs = $schema->resultset('User');
 
     # 1. Setup: Create initial record
     my $user = $rs->create({ name => 'Original Name', email => 'orig@test.com' })->get;
@@ -67,7 +65,7 @@ subtest 'Row Object update() - Existing Record' => sub {
 };
 
 subtest 'Row Object update_or_insert() - New Record' => sub {
-    my $rs = $async_schema->resultset('User');
+    my $rs = $schema->resultset('User');
 
     # 1. Create a new object (not in storage)
     my $new_user = $rs->new_result({ name => 'New User', email => 'new@test.com' });
@@ -86,7 +84,7 @@ subtest 'Row Object update_or_insert() - New Record' => sub {
 };
 
 subtest 'Row Object update() - No Changes' => sub {
-    my $user = $async_schema->resultset('User')->search({}, {rows => 1})->single->get;
+    my $user = $schema->resultset('User')->search({}, {rows => 1})->single->get;
 
     # Calling update with no dirty columns
     my $f = $user->update;
@@ -98,6 +96,4 @@ subtest 'Row Object update() - No Changes' => sub {
     is($res, $user, 'Update with no changes returns the object immediately');
 };
 
-
-
-done_testing();
+done_testing;

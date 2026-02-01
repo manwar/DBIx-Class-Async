@@ -1,41 +1,38 @@
+#!/usr/bin/env perl
 
 use strict;
 use warnings;
-use Test::More;
-use IO::Async::Loop;
-use File::Temp qw(tempfile);
 
-# The pieces we've built
-use TestSchema;
+use Test::More;
+use Test::Deep;
+use File::Temp;
+use Test::Exception;
+use IO::Async::Loop;
 use DBIx::Class::Async::Schema;
 
-BEGIN {
-    $SIG{__WARN__} = sub {};
-}
+use lib 't/lib';
 
-# 1. Setup the physical environment
-my $loop = IO::Async::Loop->new;
-my ($fh, $db_file) = tempfile(SUFFIX => '.db', UNLINK => 1);
-my $dsn = "dbi:SQLite:dbname=$db_file";
+my $loop           = IO::Async::Loop->new;
+my ($fh, $db_file) = File::Temp::tempfile(SUFFIX => '.db', UNLINK => 1);
+my $schema         = DBIx::Class::Async::Schema->connect(
+    "dbi:SQLite:dbname=$db_file", undef, undef, {},
+    { workers      => 2,
+      schema_class => 'TestSchema',
+      async_loop   => $loop,
+      cache_ttl    => 60,
+    },
+);
 
-# 2. Deploy the database
-my $setup_schema = TestSchema->connect($dsn);
-$setup_schema->deploy();
-$setup_schema->resultset('User')->populate([
+$schema->await($schema->deploy({ add_drop_table => 1 }));
+
+$schema->resultset('User')->populate([
     [qw/ name age /],
     [ 'Alice', 30 ],
     [ 'Bob',   40 ],
     [ 'Charlie', 20 ],
-]);
+])->get;
 
-# 3. Create the Async Schema Object
-my $async_schema = DBIx::Class::Async::Schema->connect($dsn, {
-    schema_class => 'TestSchema',
-    async_loop   => $loop,
-    workers      => 2,
-});
-
-my $rs = $async_schema->resultset('User');
+my $rs = $schema->resultset('User');
 
 subtest 'Testing ResultSetColumn Aggregates' => sub {
     my $initial_queries = $rs->stats('queries');
@@ -50,18 +47,12 @@ subtest 'Testing ResultSetColumn Aggregates' => sub {
     my $max_val;
     my $f_max = $age_col->max;
 
-    use Data::Dumper;
     $f_max->on_done(sub {
         my $val = shift;
-        if (ref $val eq 'HASH') {
-            note "KEYS IN HASH: " . join(", ", keys %$val);
-            note "DUMP: " . Dumper($val);
-        }
         $max_val = $val;
         $loop->stop;
     });
 
-    #$f_max->on_done(sub { $max_val = shift; $loop->stop; });
     $loop->run;
 
     ok(defined $max_val, "Retrieved a maximum age: $max_val");
@@ -89,8 +80,6 @@ subtest 'Testing ResultSetColumn Aggregates' => sub {
 
     ok(defined $min_val, "Retrieved MIN(age) with filters");
     is($rs->stats('queries'), $initial_queries + 3, "Counter incremented for filtered MIN query");
-
-    done_testing();
 };
 
 subtest 'Testing Average Aggregate' => sub {
@@ -117,7 +106,6 @@ subtest 'Testing Average Aggregate' => sub {
         # SQLite might return 30 or 30.0
         cmp_ok($avg_val, '==', 30, "Retrieved the correct average age (30)");
     }
-    done_testing();
 };
 
 subtest 'Testing Column Count' => sub {
@@ -129,8 +117,6 @@ subtest 'Testing Column Count' => sub {
         if ($future->is_done) {
             $val = $future->result;
         } else {
-            # THIS IS THE KEY:
-            diag "Worker failed with error: " . $future->failure;
             $val = undef;
         }
         $loop->stop;
@@ -138,7 +124,6 @@ subtest 'Testing Column Count' => sub {
 
     $loop->run;
     is($val, 3, "Column count works");
-    done_testing();
 };
 
-done_testing();
+done_testing;

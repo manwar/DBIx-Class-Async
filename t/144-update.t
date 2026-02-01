@@ -1,41 +1,38 @@
+#!/usr/bin/env perl
 
 use strict;
 use warnings;
+
 use Test::More;
-use File::Temp qw(tempfile);
+use Test::Deep;
+use File::Temp;
+use Test::Exception;
 use IO::Async::Loop;
-use lib 'lib';
-use TestSchema;
 use DBIx::Class::Async::Schema;
 
+use lib 't/lib';
 
-BEGIN {
-    $SIG{__WARN__} = sub {};
-}
+my $loop           = IO::Async::Loop->new;
+my ($fh, $db_file) = File::Temp::tempfile(SUFFIX => '.db', UNLINK => 1);
+my $schema         = DBIx::Class::Async::Schema->connect(
+    "dbi:SQLite:dbname=$db_file", undef, undef, {},
+    { workers      => 2,
+      schema_class => 'TestSchema',
+      async_loop   => $loop,
+      cache_ttl    => 60,
+    },
+);
 
-# 1. Setup real temporary SQLite database
-my ($fh, $filename) = tempfile(SUFFIX => '.db', UNLINK => 1);
-my $dsn = "dbi:SQLite:dbname=$filename";
+$schema->await($schema->deploy({ add_drop_table => 1 }));
 
-# Initialize and seed the DB so all_future has something to find
-my $base_schema = TestSchema->connect($dsn);
-$base_schema->deploy();
-$base_schema->resultset('User')->create({
+$schema->resultset('User')->create({
     id    => 1,
     name  => 'BottomUp User',
     email => 'bu@test.com'
-});
-
-# 2. Initialize the Async Engine
-my $loop = IO::Async::Loop->new;
-my $async_schema = DBIx::Class::Async::Schema->connect($dsn, {
-    schema_class => 'TestSchema',
-    async_loop   => $loop,
-    workers      => 2,
-});
+})->get;
 
 subtest 'ResultSet Update - Path A (Fast Path)' => sub {
-    my $rs = $async_schema->resultset('User')->search({ id => 1 });
+    my $rs = $schema->resultset('User')->search({ id => 1 });
 
     # 1. Dispatch the update
     # This should trigger Path A because there are no attrs
@@ -48,7 +45,7 @@ subtest 'ResultSet Update - Path A (Fast Path)' => sub {
 
     # 2. Verify the update by fetching a fresh ResultSet
     # (Don't use the old $rs because it might have the old name cached in _rows!)
-    my $fresh_rs = $async_schema->resultset('User')->search({ id => 1 });
+    my $fresh_rs = $schema->resultset('User')->search({ id => 1 });
     my $user = $fresh_rs->next->get;
 
     is($user->name, 'Updated Name', 'Database reflects the update');
@@ -56,7 +53,7 @@ subtest 'ResultSet Update - Path A (Fast Path)' => sub {
 
 subtest 'ResultSet Update - Path B (Safe Path)' => sub {
     # Adding 'rows => 1' forces Path B
-    my $rs = $async_schema->resultset('User')->search(
+    my $rs = $schema->resultset('User')->search(
         { id => 1 },
         { rows => 1 }
     );
@@ -68,8 +65,8 @@ subtest 'ResultSet Update - Path B (Safe Path)' => sub {
     is($rows_affected, 1, 'Safe Path updated correct number of rows');
 
     # Verify
-    my $user = $async_schema->resultset('User')->find(1)->get;
+    my $user = $schema->resultset('User')->find(1)->get;
     is($user->name, 'Path B Winner', 'Data updated via Safe Path');
 };
 
-done_testing();
+done_testing;
