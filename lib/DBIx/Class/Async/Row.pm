@@ -173,8 +173,9 @@ sub delete {
     }
 
     # 2. Use the Bridge (Ensure you use the key names the Worker expects)
-    return DBIx::Class::Async::delete(
+    return DBIx::Class::Async::_call_worker(
         $self->{_async_db},
+        'delete',
         {
             source_name => $self->{_source_name},
             cond        => \%cond
@@ -714,8 +715,9 @@ sub update_or_insert {
                 "logic_error");
         }
 
-        return DBIx::Class::Async::update(
+        return DBIx::Class::Async::_call_worker(
             $self->{_async_db},
+            'update',
             {
                 source_name => $source_name,
                 cond        => { $pk_col => $id_val },
@@ -729,8 +731,9 @@ sub update_or_insert {
                 return $on_success->($res);
             });
     } else {
-        return DBIx::Class::Async::create(
+        return DBIx::Class::Async::_call_worker(
             $self->{_async_db},
+            'create',
             {
                 source_name => $source_name,
                 data        => \%to_save

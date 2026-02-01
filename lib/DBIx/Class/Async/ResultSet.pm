@@ -451,7 +451,8 @@ sub count {
     warn "[PID $$] STAGE 1 (Parent): Dispatching count" if ASYNC_TRACE;
 
     # This returns a Future that will be resolved by the worker
-    return DBIx::Class::Async::count($db, $payload)->on_done(sub {
+    return DBIx::Class::Async::_call_worker(
+        $db, 'count', $payload)->on_done(sub {
         my $result = shift;
         $db->{_cache}{$cache_key} = $result if defined $cache_key;
     });
@@ -461,7 +462,8 @@ sub count_future {
     my $self = shift;
     my $db   = $self->{_async_db};
 
-    return DBIx::Class::Async::count($db, {
+    return DBIx::Class::Async::_call_worker(
+        $db, 'count', {
         source_name => $self->{_source_name},
         cond        => $self->{_cond},
         attrs       => $self->{_attrs},
@@ -502,11 +504,14 @@ sub count_total {
     delete @merged_attrs{qw(rows offset page order_by)};
 
     # 3. Use the static call exactly like your other count() implementations
-    return DBIx::Class::Async::count($self->{_async_db}, {
-        source_name => $self->{_source_name},
-        cond        => \%merged_cond,
-        attrs       => \%merged_attrs,
-    });
+    return DBIx::Class::Async::_call_worker(
+        $self->{_async_db},
+        'count',
+        {
+            source_name => $self->{_source_name},
+            cond        => \%merged_cond,
+            attrs       => \%merged_attrs,
+        });
 }
 
 ############################################################################
@@ -524,8 +529,10 @@ sub delete {
 
     # Path A: Simple, direct DELETE if condition is a clean HASH
     if ( ref($self->{_cond}) eq 'HASH' && keys %{$self->{_cond}} ) {
-        return DBIx::Class::Async::delete(
-            $self->{_async_db}, {
+        return DBIx::Class::Async::_call_worker(
+            $self->{_async_db},
+            'delete',
+            {
                 source_name => $self->{_source_name},
                 cond        => $self->{_cond}
             }
@@ -566,8 +573,10 @@ sub delete_all {
         }
 
         # Step 3: Send the targeted delete to the worker
-        return DBIx::Class::Async::delete(
-            $self->{_async_db}, {
+        return DBIx::Class::Async::_call_worker(
+            $self->{_async_db},
+            'delete',
+            {
                 source_name => $self->{_source_name},
                 cond        => $condition
             }
@@ -1284,8 +1293,9 @@ sub update {
 
     # Dispatch via the main Async module's update handler
     # This uses the resolved $cond we figured out above
-    return DBIx::Class::Async::update(
+    return DBIx::Class::Async::_call_worker(
         $db,
+        'update',
         {
             source_name => $self->{_source_name},
             cond        => $cond,
@@ -1317,7 +1327,10 @@ sub update_all {
             updates     => $updates,
         };
 
-        return DBIx::Class::Async::update($bridge, $payload)->then(sub {
+        return DBIx::Class::Async::_call_worker(
+            $bridge,
+            'update',
+            $payload)->then(sub {
             my $affected = shift;
             return Future->done($affected);
         });

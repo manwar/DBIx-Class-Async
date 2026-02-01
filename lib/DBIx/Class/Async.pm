@@ -30,8 +30,6 @@ use constant {
 };
 
 
-use Data::Dumper;
-
 sub _next_worker {
     my ($db) = @_;
 
@@ -51,6 +49,8 @@ sub _next_worker {
 
 sub _call_worker {
     my ($db, $operation, @args) = @_;
+
+    warn "[PID $$] Bridge - sending '$operation' to worker." if ASYNC_TRACE;
 
     my $worker = _next_worker($db);
 
@@ -112,45 +112,6 @@ sub _call_worker {
             unless $operation =~ /^(?:ping|health_check|deploy)$/;
         return Future->done($result);
     });
-}
-
-sub delete {
-    my ($db, $payload) = @_;
-    warn "[PID $$] Bridge - sending 'delete' to worker" if ASYNC_TRACE;
-    return _call_worker($db, 'delete', $payload);
-}
-
-sub create {
-    my ($db, $payload) = @_;
-    warn "[PID $$] STAGE 2 (Parent): Bridge - sending 'create' to worker"
-        if ASYNC_TRACE;
-
-    return _call_worker($db, 'create', $payload);
-}
-
-sub update {
-    my ($db, $payload) = @_;
-    warn "[PID $$] STAGE 2 (Parent): Bridge - sending 'update' to worker"
-        if ASYNC_TRACE;
-
-    return _call_worker($db, 'update', $payload);
-}
-
-sub all {
-    my ($db, $payload) = @_;
-    warn "[PID $$] STAGE 2 (Parent): Bridge - sending 'all' to worker"
-        if ASYNC_TRACE;
-
-    return _call_worker($db, 'all', $payload);
-}
-
-sub count {
-    my ($db, $payload) = @_;
-
-    warn "[PID $$] STAGE 2 (Parent): Bridge - sending 'count' to worker"
-        if ASYNC_TRACE;
-
-    return _call_worker($db, 'count', $payload);
 }
 
 sub disconnect_async_db {
