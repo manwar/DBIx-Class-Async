@@ -1,4 +1,4 @@
-name: CI Makefile
+name: CI
 
 on:
     push:
@@ -14,8 +14,9 @@ jobs:
       fail-fast: false
       matrix:
         perl-version:
-#          - '5.8'
-#          - '5.30'
+          - '5.8'
+          - '5.20'
+          - '5.30'
           - '5.42'
 #          - 'latest'
     container:
@@ -24,11 +25,9 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-
       - name: Prepare for release tests
         run: |
             cpanm --installdeps --notest .
-            #cpanm --notest Test::CheckManifest Test::Pod::Coverage Pod::Coverage Test::Pod
       - name: Release tests
         #env:
         #  RELEASE_TESTING: 1
