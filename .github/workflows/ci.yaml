@@ -35,4 +35,4 @@ jobs:
         run: |
             perl Makefile.PL
             make
-            make test
+            PERL5LIB=$PERL5LIB:$(pwd)/lib:$(pwd)/t/lib make test
