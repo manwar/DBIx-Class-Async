@@ -1,6 +1,6 @@
 Revision history for DBIx::Class::Async
 
-0.50 2026-02-02
+0.50 2026-02-03
      [MAJOR ARCHITECTURAL OVERHAUL]
      - Complete rewrite of the Storage and Persistence layer to use a
        decoupled "Bridge & Worker" architecture.
