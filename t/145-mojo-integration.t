@@ -7,8 +7,8 @@ use Test::More;
 
 use lib 't/lib';
 
-eval { require Mojolicious; require IO::Async::Loop::Mojo; 1 }
-    or plan skip_all => "Mojolicious and IO::Async::Loop::Mojo required for this test";
+eval { require Mojo::IOLoop; require IO::Async::Loop::Mojo; 1 }
+    or plan skip_all => "Mojo::IOLoop and IO::Async::Loop::Mojo required for this test";
 
 use Mojo::IOLoop;
 use DBIx::Class::Async::Schema;

@@ -1,6 +1,6 @@
 package DBIx::Class::Async::Storage;
 
-$DBIx::Class::Async::Storage::VERSION   = '0.53';
+$DBIx::Class::Async::Storage::VERSION   = '0.54';
 $DBIx::Class::Async::Storage::AUTHORITY = 'cpan:MANWAR';
 
 use strict;
@@ -13,7 +13,7 @@ DBIx::Class::Async::Storage - Storage Layer for DBIx::Class::Async
 
 =head1 VERSION
 
-Version 0.53
+Version 0.54
 
 =cut
 

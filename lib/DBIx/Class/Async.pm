@@ -1,6 +1,6 @@
 package DBIx::Class::Async;
 
-$DBIx::Class::Async::VERSION   = '0.53';
+$DBIx::Class::Async::VERSION   = '0.54';
 $DBIx::Class::Async::AUTHORITY = 'cpan:MANWAR';
 
 =encoding utf8
@@ -11,7 +11,7 @@ DBIx::Class::Async - Non-blocking, multi-worker asynchronous wrapper for DBIx::C
 
 =head1 VERSION
 
-Version 0.53
+Version 0.54
 
 =head1 DISCLAIMER
 
@@ -1049,6 +1049,103 @@ sub _serialise_row_with_prefetch {
     }
     return \%data;
 }
+
+=head1 EVENT LOOP INTEGRATION
+
+B<LOOP AGNOSTICISM>
+
+C<DBIx::Class::Async> is built atop L<IO::Async>, but it is designed to be
+loop-agnostic. It does not force you to use a specific event loop engine.
+This is critical for applications already running within an established
+ecosystem like L<Mojolicious>, L<AnyEvent>, etc.
+
+The bridge follows a B<"Smart Default"> pattern:
+
+=over 4
+
+=item * Implicit
+
+If no loop is provided, it automatically detects your OS and instantiates
+the best available L<IO::Async::Loop> (e.g., B<Epoll>, B<KQueue>, or B<Poll>).
+
+=item * Explicit
+
+If you provide a loop object via the B<loop> attribute, the bridge B<"slaves">
+itself to that engine.
+
+=back
+
+B<UNDER THE HOOD>
+
+When an external loop is provided, L<DBIx::Class::Async> performs the following
+steps:
+
+=over 4
+
+=item * Process Delegation
+
+The library initialises a pool of persistent background workers. These are
+separate processes that hold their own database handles to prevent blocking
+the main event loop.
+
+=item * Pipe Multiplexing
+
+Communication between your application and the workers happens via asynchronous
+pipes. Your event loop (Mojo, Poll, etc.) watches these pipes for "Read Ready"
+signals.
+
+=item * Heartbeat Sharing
+
+All internal timers (Health Checks, TTL Caching) are registered as Notifiers
+within the parent loop’s reactor, ensuring they only fire when the loop
+is "ticking".
+
+=item * Non-Blocking Flow
+
+Because the database I/O happens in a separate memory space, a 10-second
+query will not increase the "latency" or "lag" of your web server's main loop.
+
+=back
+
+B<EXAMPLE: MOJOLICIOUS INTEGRATION>
+
+To use this library inside a B<Mojolicious> application, use the L<IO::Async::Loop::Mojo>
+bridge. This allows your database workers to share the same reactor as your
+web server, preventing I/O starvation.
+
+    use Mojolicious::Lite;
+    use DBIx::Class::Async::Schema;
+    use IO::Async::Loop::Mojo;
+
+    # 1. Create a bridge between IO::Async and Mojo
+    my $loop = IO::Async::Loop::Mojo->new;
+
+    # 2. Connect your schema using the Mojo-backed loop
+    helper db => sub {
+        state $schema = DBIx::Class::Async::Schema->connect(
+            $dsn, $user, $pass, \%dbic_attrs,
+            {
+                schema_class => 'My::App::Schema',
+                workers      => 4,
+                loop         => $loop,  # The Magic Connection
+            }
+        );
+    };
+
+    # 3. Use non-blocking DBIC in your routes
+    get '/stats' => sub {
+        my $c = shift;
+
+        $c->db->resultset('User')
+              ->search({ active => 1 })
+              ->all
+              ->on_done(sub {
+                my @users = @_;
+                $c->render(json => { count => scalar @users });
+              });
+    };
+
+    app->start;
 
 =head1 PERFORMANCE TIPS
 
