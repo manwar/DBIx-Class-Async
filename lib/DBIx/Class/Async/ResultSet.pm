@@ -1,6 +1,6 @@
 package DBIx::Class::Async::ResultSet;
 
-$DBIx::Class::Async::ResultSet::VERSION   = '0.56';
+$DBIx::Class::Async::ResultSet::VERSION   = '0.57';
 $DBIx::Class::Async::ResultSet::AUTHORITY = 'cpan:MANWAR';
 
 =head1 NAME
@@ -9,7 +9,7 @@ DBIx::Class::Async::ResultSet - Non-blocking resultset proxy with Future-based e
 
 =head1 VERSION
 
-Version 0.56
+Version 0.57
 
 =head1 SYNOPSIS
 
@@ -3529,6 +3529,15 @@ sub _inflate_row {
 
     return $row;
 }
+
+=head2 Automatic Cache Safety
+
+L<DBIx::Class::Async> automatically analyses your queries for non-deterministic
+SQL functions (e.g., B<NOW()>, B<CURTIME()>, B<RAND()>, B<UUID()>).
+
+If detected in the B<WHERE> clause, B<SELECT> list, or B<HAVING> clause, the
+caching mechanism will be B<automatically bypassed> for that specific query,
+even if B<cache_ttl> is enabled, to ensure data integrity.
 
 =head1 AUTHOR
 

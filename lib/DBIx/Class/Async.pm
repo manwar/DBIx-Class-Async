@@ -1,6 +1,6 @@
 package DBIx::Class::Async;
 
-$DBIx::Class::Async::VERSION   = '0.56';
+$DBIx::Class::Async::VERSION   = '0.57';
 $DBIx::Class::Async::AUTHORITY = 'cpan:MANWAR';
 
 =encoding utf8
@@ -11,7 +11,7 @@ DBIx::Class::Async - Non-blocking, multi-worker asynchronous wrapper for DBIx::C
 
 =head1 VERSION
 
-Version 0.56
+Version 0.57
 
 =head1 DISCLAIMER
 
@@ -192,6 +192,16 @@ Initialises the async environment and spawns workers.
         cache_ttl     => 300, # 5 minutes
         enable_retry  => 1,
     );
+
+Set the default Time-To-Live for cached queries in seconds. Defaults to
+B<0> (caching is B<disabled> by default).
+
+To enable caching globally, set a positive integer. To enable it for a
+specific query, use the B<cache> attribute in the search method.
+
+B<Warning:> Be cautious enabling caching. Cached data can become stale, and
+queries containing non-deterministic SQL functions (like B<NOW()>, B<RAND()>)
+may produce incorrect results if cached.
 
 =cut
 
