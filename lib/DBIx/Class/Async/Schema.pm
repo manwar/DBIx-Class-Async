@@ -115,6 +115,8 @@ sub connect {
         croak "Cannot load schema class $schema_class: $@";
     }
 
+    $async_options->{cache_ttl} //= 0;  # Caching is OFF by default.
+
     my $async_db = eval {
         DBIx::Class::Async->create_async_db(
             schema_class => $schema_class,

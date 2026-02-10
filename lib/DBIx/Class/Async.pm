@@ -173,7 +173,7 @@ our $METRICS;
 
 use constant {
     DEFAULT_WORKERS       => 4,
-    DEFAULT_CACHE_TTL     => 300,
+    DEFAULT_CACHE_TTL     => 0,
     DEFAULT_QUERY_TIMEOUT => 30,
     DEFAULT_RETRIES       => 3,
     HEALTH_CHECK_INTERVAL => 300,
@@ -206,14 +206,9 @@ sub create_async_db {
         croak "Cannot load schema class $schema_class: $@";
     }
 
-    # Preserving your TTL logic exactly
-    my $cache_ttl = $args{cache_ttl};
-    if (defined $cache_ttl) {
-        $cache_ttl = undef if $cache_ttl == 0;
-    }
-    else {
-        $cache_ttl = DEFAULT_CACHE_TTL;
-    }
+    my $cache_ttl = exists $args{cache_ttl}
+                    ? $args{cache_ttl}
+                    : DEFAULT_CACHE_TTL;
 
     # 1. Extract Column Metadata (Inflators/Deflators)
     # We do this before creating the hashref so we can include it
@@ -245,7 +240,7 @@ sub create_async_db {
             _query_timeout => $args{query_timeout} || DEFAULT_QUERY_TIMEOUT,
             _on_connect_do => $args{on_connect_do} || [],
         },
-        _cache             => $args{cache} || _build_default_cache($cache_ttl),
+        _cache             => $args{cache} || ($cache_ttl > 0 ? _build_default_cache($cache_ttl) : undef),
         _cache_ttl         => $cache_ttl,
         _enable_retry      => $args{enable_retry} // 0,
         _retry_config      => {
@@ -985,6 +980,10 @@ sub _interpolate_string {
 
 sub _build_default_cache {
     my ($ttl) = @_;
+
+    # If ttl is 0 or undef, we might not want to initialise the cache driver
+    # depending on how CHI handles undef (never expire) vs 0 (expire immediately)
+    return undef if !defined $ttl || $ttl == 0;
 
     my %params = (
         driver => 'Memory',
