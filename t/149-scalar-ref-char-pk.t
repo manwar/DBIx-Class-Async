@@ -5,7 +5,6 @@ use warnings;
 
 use Test::More;
 use File::Temp;
-use Test::Exception;
 
 use lib 't/lib';
 
@@ -69,6 +68,56 @@ subtest 'Perl-side UUID as non-autoincrement char PK works correctly' => sub {
     ok( !$@,                                 'create() did not throw'             );
     isa_ok( $row, 'DBIx::Class::Async::Row', 'Returned a Row object'              );
     is( $row->EventId, $uuid,                'EventId matches the UUID we passed' );
+};
+
+subtest 'Scalar-ref on non-PK select column is unaffected by the guard' => sub {
+
+    # Insert a known row to search against
+    my $uuid = do { require Data::UUID; lc Data::UUID->new->create_str };
+
+    $schema->resultset('Event')->create({
+        EventId   => $uuid,
+        TapeoutId => '550e8400-e29b-41d4-a716-446655440000',
+        Content   => 'Dynamic SQL test row',
+        IpAddr    => 2130706433,
+        Author    => 'test_author',
+        Context   => undef,
+    })->get;
+
+    # Scalar ref in +select (non-PK) should pass the guard and work correctly
+    my $result = eval {
+        $schema->resultset('Event')
+            ->search(
+                { EventId => $uuid },
+                {
+                    '+select'    => [ { '' => \"datetime('now')", -as => 'ts' } ],
+                    result_class => 'DBIx::Class::ResultClass::HashRefInflator',
+                }
+            )->all->get;
+    };
+
+    ok( !$@,                    'scalar-ref on non-PK select column did not throw' );
+    ok( $result && @$result,    'Got results back'                                  );
+    ok( $result->[0]{ts},       'Got timestamp value from dynamic select column'   );
+
+    sleep 1;
+
+    my $result2 = eval {
+        $schema->resultset('Event')
+            ->search(
+                { EventId => $uuid },
+                {
+                    '+select'    => [ { '' => \"datetime('now')", -as => 'ts' } ],
+                    result_class => 'DBIx::Class::ResultClass::HashRefInflator',
+                }
+            )->all->get;
+    };
+
+    isnt(
+        $result->[0]{ts},
+        $result2->[0]{ts},
+        'Dynamic SQL in +select bypasses cache correctly (timestamps differ)'
+    );
 };
 
 $schema->disconnect;
