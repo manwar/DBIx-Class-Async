@@ -107,6 +107,7 @@ t/145-mojo-integration.t
 t/146-await-all.t
 t/147-run-parallel.t
 t/148-caching.t
+t/149-scalar-ref-char-pk.t
 t/benchmark.pl
 t/manifest.t
 t/pod.t
@@ -114,3 +115,4 @@ t/lib/TestSchema.pm
 t/lib/TestSchema/Result/User.pm
 t/lib/TestSchema/Result/Order.pm
 t/lib/TestSchema/Result/Product.pm
+t/lib/TestSchema/Result/Event.pm
