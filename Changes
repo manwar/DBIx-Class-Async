@@ -1,5 +1,25 @@
 Revision history for DBIx::Class::Async
 
+0.59 2026-02-21
+     [Bug Fixes]
+     - Fixed issue silent drop of relationship 'where' conditions.
+       Relationships defined with a 'where' containing raw SQL scalar refs
+       (e.g. datetime functions) were silently ignored when traversing via
+       a row accessor or prefetch, returning all related rows instead of
+       the filtered subset.
+       Fixed in _ensure_accessors(), _fetch_relationship_async(), and
+       related_resultset() in DBIx::Class::Async::Row.
+       Relationships with raw SQL in their 'where' are now excluded from
+       the '_related' cache, ensuring dynamic expressions are evaluated
+       fresh on every call.
+     [TESTS]
+     - t/151-has-many-datetime-filter.t: to cover the bug fix.
+     - t/150-multi-column-relationship.t: new test covering multi-column
+       relationships spanning two tables, demonstrating both the DBIC
+       coderef relationship approach (join/prefetch) and the async-safe
+       helper method pattern for cases where join conditions depend on
+       columns from related tables rather than self.
+
 0.58 2026-02-20
      [BUG FIX]
      - ResultSet::create() now detects scalar-ref values targeting primary
