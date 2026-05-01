@@ -140,3 +140,4 @@ t/lib/TestSchema/Result/Thing.pm
 t/lib/TestSchema/Result/Sprocket.pm
 t/lib/TestSchema/Result/Interface.pm
 t/lib/TestSchema/Result/Maintenance.pm
+xt/001-oracle.t

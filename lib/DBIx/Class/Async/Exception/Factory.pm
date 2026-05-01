@@ -1,10 +1,11 @@
 package DBIx::Class::Async::Exception::Factory;
 
-$DBIx::Class::Async::Exception::Factory::VERSION   = '0.65';
-$DBIx::Class::Async::Exception::Factory::AUTHORITY = 'cpan:MANWAR';
-
 use strict;
 use warnings;
+use version;
+
+our $VERSION   = qv('v0.66.0');
+our $AUTHORITY = 'cpan:MANWAR';
 
 use DBIx::Class::Async::Exception;
 use DBIx::Class::Async::Exception::RelationshipAsColumn;
@@ -19,7 +20,7 @@ DBIx::Class::Async::Exception::Factory - Translate raw DBIx::Class errors into t
 
 =head1 VERSION
 
-Version 0.65
+Version v0.66.0
 
 =head1 SYNOPSIS
 

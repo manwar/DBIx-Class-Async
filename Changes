@@ -1,5 +1,25 @@
 Revision history for DBIx::Class::Async
 
+v0.66.0  2026-05-01
+         [IMPROVEMENTS]
+         - Switched to v-string versioning (semantic versioning going forward).
+
+         - Added Oracle database support and verified the following features
+           work correctly against Oracle AI Database 23ai Free (via Docker):
+           CRUD operations, search/count/all, belongs_to and has_many
+           relationships, transactions via txn_do(), and concurrent async
+           queries across multiple workers.
+
+         - Added xt/001-oracle.t as an author integration test for Oracle.
+           Requires DBD::Oracle and Math::Base36 >= 0.07. Connection details
+           are configurable via environment variables:
+           DBIC_ASYNC_ORACLE_DSN,
+           DBIC_ASYNC_ORACLE_USER,
+           DBIC_ASYNC_ORACLE_PASS.
+
+         - Added DATABASE SUPPORT section to main POD documenting Oracle
+           compatibility and instructions for running the Oracle test suite.
+
 0.65 2026-03-15
      [IMPROVEMENTS]
      - Added security document SECURITY.md as recommended in the issue #11.
