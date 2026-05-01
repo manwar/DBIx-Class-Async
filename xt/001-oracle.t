@@ -41,7 +41,6 @@ sub drop_table_if_exists {
         local $dbh->{PrintError} = 0;
         $dbh->do("DROP TABLE $table CASCADE CONSTRAINTS");
     };
-    # ORA-00942: table or view does not exist — safe to ignore
 }
 
 my $raw_dbh = DBI->connect($DSN, $USER, $PASS, {
