@@ -1,5 +1,10 @@
 Revision history for DBIx::Class::Async
 
+v1.0.0   2026-05-01
+         [IMPROVEMENTS]
+         - PAUSE didn't like the v-string move: Status: Decreasing version number
+           So, bumped the version to v1.0.0.
+
 v0.66.0  2026-05-01
          [IMPROVEMENTS]
          - Switched to v-string versioning (semantic versioning going forward).

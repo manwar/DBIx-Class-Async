@@ -4,7 +4,7 @@ use strict;
 use warnings;
 use version;
 
-our $VERSION   = qv('v0.66.0');
+our $VERSION   = qv('v1.0.0');
 our $AUTHORITY = 'cpan:MANWAR';
 
 =encoding utf8
@@ -15,7 +15,7 @@ DBIx::Class::Async::Schema - Non-blocking, worker-pool based Proxy for DBIx::Cla
 
 =head1 VERSION
 
-Version v0.66.0
+Version v1.0.0
 
 =head1 SYNOPSIS
 

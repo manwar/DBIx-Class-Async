@@ -4,7 +4,7 @@ use strict;
 use warnings;
 use version;
 
-our $VERSION   = qv('v0.66.0');
+our $VERSION   = qv('v1.0.0');
 our $AUTHORITY = 'cpan:MANWAR';
 
 use Future;
@@ -15,7 +15,7 @@ DBIx::Class::Async::Storage::DBI::Cursor - Asynchronous cursor for DBIx::Class R
 
 =head1 VERSION
 
-Version v0.66.0
+Version v1.0.0
 
 =cut
 

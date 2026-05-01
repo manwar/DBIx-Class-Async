@@ -4,7 +4,7 @@ use strict;
 use warnings;
 use version;
 
-our $VERSION   = qv('v0.66.0');
+our $VERSION   = qv('v1.0.0');
 our $AUTHORITY = 'cpan:MANWAR';
 
 use DBIx::Class::Async::Exception;
@@ -20,7 +20,7 @@ DBIx::Class::Async::Exception::Factory - Translate raw DBIx::Class errors into t
 
 =head1 VERSION
 
-Version v0.66.0
+Version v1.0.0
 
 =head1 SYNOPSIS
 

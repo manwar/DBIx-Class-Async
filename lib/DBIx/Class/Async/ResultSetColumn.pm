@@ -4,7 +4,7 @@ use strict;
 use warnings;
 use version;
 
-our $VERSION   = qv('v0.66.0');
+our $VERSION   = qv('v1.0.0');
 our $AUTHORITY = 'cpan:MANWAR';
 
 =head1 NAME
@@ -13,7 +13,7 @@ DBIx::Class::Async::ResultSetColumn - Asynchronous operations on a single Result
 
 =head1 VERSION
 
-Version v0.66.0
+Version v1.0.0
 
 =head1 SYNOPSIS
 
