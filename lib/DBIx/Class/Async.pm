@@ -4,7 +4,7 @@ use strict;
 use warnings;
 use version;
 
-our $VERSION   = qv('v1.0.0');
+our $VERSION   = qv('v1.0.1');
 our $AUTHORITY = 'cpan:MANWAR';
 
 =encoding utf8
@@ -15,7 +15,7 @@ DBIx::Class::Async - Non-blocking, multi-worker asynchronous wrapper for DBIx::C
 
 =head1 VERSION
 
-Version v1.0.0
+Version v1.0.1
 
 =head1 DISCLAIMER
 
@@ -54,6 +54,33 @@ variables and run the test in C<xt/>:
     prove -lv xt/001-oracle.t
 
 B<Note:> L<Math::Base36> E<gt>= 0.07 is required for Oracle support.
+
+=head2 MySQL
+
+DBIx::Class::Async has been tested against MySQL 8.0.45 (Ubuntu 24.04) using
+L<DBD::mysql>. The following features were verified to work correctly:
+
+=over 4
+
+=item * CRUD operations (create, read, update, delete)
+
+=item * search(), count(), and all()
+
+=item * belongs_to and has_many relationships
+
+=item * Transactions via txn_do()
+
+=item * Concurrent async queries across multiple workers
+
+=back
+
+To run the MySQL integration tests against your instance, set the following
+environment variables and run the test in C<xt/>:
+
+    DBIC_ASYNC_MYSQL_DSN='dbi:mysql:database=your_db;host=localhost;port=3306' \
+    DBIC_ASYNC_MYSQL_USER='your_user' \
+    DBIC_ASYNC_MYSQL_PASS='your_password' \
+    prove -lv xt/002-mysql.t
 
 =head2 PostgreSQL
 

@@ -1,8 +1,27 @@
 Revision history for DBIx::Class::Async
 
+v1.0.1   2026-05-06
+         [IMPROVEMENTS]
+         - Added MySQL database support and verified the following features
+           work correctly against MySQL 8.0.45 (Ubuntu 24.04):
+           CRUD operations, search/count/all, belongs_to and has_many
+           relationships, transactions via txn_do(), and concurrent async
+           queries across multiple workers.
+
+         - Added xt/002-mysql.t as an author integration test for MySQL.
+           Requires DBD::mysql. Connection details are configurable via
+           environment variables:
+           DBIC_ASYNC_MYSQL_DSN,
+           DBIC_ASYNC_MYSQL_USER,
+           DBIC_ASYNC_MYSQL_PASS.
+
+         - Updated POD documenting MySQL compatibility and instructions for
+           running the MySQL test suite.
+
 v1.0.0   2026-05-01
          [IMPROVEMENTS]
-         - PAUSE didn't like the v-string move: Status: Decreasing version number
+         - PAUSE didn't like the v-string move:
+                Status: Decreasing version number
            So, bumped the version to v1.0.0.
 
 v0.66.0  2026-05-01
