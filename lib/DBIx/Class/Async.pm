@@ -4,7 +4,7 @@ use strict;
 use warnings;
 use version;
 
-our $VERSION   = qv('v1.0.1');
+our $VERSION   = qv('v1.0.2');
 our $AUTHORITY = 'cpan:MANWAR';
 
 =encoding utf8
@@ -15,7 +15,7 @@ DBIx::Class::Async - Non-blocking, multi-worker asynchronous wrapper for DBIx::C
 
 =head1 VERSION
 
-Version v1.0.1
+Version v1.0.2
 
 =head1 DISCLAIMER
 
@@ -106,10 +106,10 @@ async path (equivalent of DBIx-Class PR#138):
 
 =over 4
 
-=item * B<BUG 1> — InflateColumn::DateTime not firing through the async
+=item * B<BUG 1> - InflateColumn::DateTime not firing through the async
 worker, returning a plain string instead of a DateTime object.
 
-=item * B<BUG 2> — No formatter set on the inflated DateTime object,
+=item * B<BUG 2> - No formatter set on the inflated DateTime object,
 causing stringification to fall back to bare ISO8601 output instead of
 PostgreSQL-native format.
 

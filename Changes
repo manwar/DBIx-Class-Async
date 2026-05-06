@@ -1,5 +1,9 @@
 Revision history for DBIx::Class::Async
 
+v1.0.2   2026-05-06
+         [IMPROVEMENTS]
+         - Tidied up unit test for Oracle and MySQL to use deploy().
+
 v1.0.1   2026-05-06
          [IMPROVEMENTS]
          - Added MySQL database support and verified the following features

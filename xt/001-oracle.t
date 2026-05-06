@@ -5,7 +5,7 @@ use warnings;
 use Test::More;
 use Test::Exception;
 
-use lib "t/lib";
+use lib "xt/lib";
 use IO::Async::Loop;
 use DBIx::Class::Async::Schema;
 
@@ -19,58 +19,7 @@ my $PASS = $ENV{DBIC_ASYNC_ORACLE_PASS} || 'dbictest123';
     if ($@) {
         plan skip_all => 'DBD::Oracle not installed';
     }
-
-    eval {
-        require DBI;
-        my $dbh = DBI->connect($DSN, $USER, $PASS, {
-            RaiseError => 1,
-            PrintError => 0,
-        });
-        $dbh->disconnect;
-    };
-    if ($@) {
-        plan skip_all => "Cannot connect to Oracle ($DSN): $@";
-    }
 }
-
-# Oracle does not support DROP TABLE IF EXISTS, so we use this helper.
-sub drop_table_if_exists {
-    my ($dbh, $table) = @_;
-    eval {
-        local $dbh->{RaiseError} = 0;
-        local $dbh->{PrintError} = 0;
-        $dbh->do("DROP TABLE $table CASCADE CONSTRAINTS");
-    };
-}
-
-my $raw_dbh = DBI->connect($DSN, $USER, $PASS, {
-    RaiseError => 1,
-    AutoCommit => 1,
-});
-
-drop_table_if_exists($raw_dbh, 'orders');
-drop_table_if_exists($raw_dbh, 'users');
-
-$raw_dbh->do(q{
-    CREATE TABLE users (
-        id       NUMBER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-        name     VARCHAR2(100)  NOT NULL,
-        email    VARCHAR2(255),
-        age      NUMBER(10),
-        active   NUMBER(1)      DEFAULT 1 NOT NULL,
-        settings CLOB,
-        balance  NUMBER(15,2)   DEFAULT 0
-    )
-});
-
-$raw_dbh->do(q{
-    CREATE TABLE orders (
-        id      NUMBER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-        user_id NUMBER(10)    NOT NULL REFERENCES users(id),
-        amount  NUMBER(10,2)  NOT NULL,
-        status  VARCHAR2(255) DEFAULT 'pending' NOT NULL
-    )
-});
 
 my $loop   = IO::Async::Loop->new;
 my $schema = DBIx::Class::Async::Schema->connect(
@@ -81,6 +30,8 @@ my $schema = DBIx::Class::Async::Schema->connect(
         async_loop   => $loop,
     },
 );
+
+$schema->await($schema->deploy({ add_drop_table => 1 }));
 
 isa_ok($schema, 'DBIx::Class::Async::Schema', 'Schema connected to Oracle');
 
@@ -95,12 +46,12 @@ subtest 'Basic CRUD — User' => sub {
         active => 1,
     })->get;
 
-    isa_ok($user, 'DBIx::Class::Async::Row', 'create() returns a Row');
-    is($user->name,  'Oracle User',          'name is correct');
-    is($user->email, 'oracle@example.com',   'email is correct');
-    ok($user->id,                            'id was assigned by Oracle sequence');
+    isa_ok($user,    'DBIx::Class::Async::Row', 'create() returns a Row');
+    is($user->name,  'Oracle User',             'name is correct');
+    is($user->email, 'oracle@example.com',      'email is correct');
+    ok($user->id,                               'id was assigned by Oracle sequence');
 
-    # Find
+    # Read
     my $found = $user_rs->find($user->id)->get;
     isa_ok($found, 'DBIx::Class::Async::Row', 'find() returns a Row');
     is($found->name, 'Oracle User', 'find() name matches');
@@ -118,11 +69,10 @@ subtest 'Basic CRUD — User' => sub {
 
 subtest 'Search and count' => sub {
     my $user_rs = $schema->resultset('User');
+    my $before  = $user_rs->count->get;
 
-    my $before = $user_rs->count->get;
-
-    $user_rs->create({ name => 'Search One', email => 's1@oracle.com', active => 1 })->get;
-    $user_rs->create({ name => 'Search Two', email => 's2@oracle.com', active => 0 })->get;
+    $user_rs->create({ name => 'Search One',   email => 's1@oracle.com', active => 1 })->get;
+    $user_rs->create({ name => 'Search Two',   email => 's2@oracle.com', active => 0 })->get;
     $user_rs->create({ name => 'Search Three', email => 's3@oracle.com', active => 1 })->get;
 
     my $after = $user_rs->count->get;
@@ -162,14 +112,13 @@ subtest 'Relationships — belongs_to and has_many' => sub {
 
     # has_many
     my $user_orders = $user->orders->all->get;
-    is(scalar @$user_orders, 1,          'has_many returns 1 order');
+    is(scalar @$user_orders, 1,           'has_many returns 1 order');
     is($user_orders->[0]->id, $order->id, 'has_many correct order');
 };
 
 subtest 'Transactions — txn_do' => sub {
     my $user_rs = $schema->resultset('User');
-
-    my $before = $user_rs->count->get;
+    my $before  = $user_rs->count->get;
 
     # Successful transaction
     $schema->txn_do([
@@ -187,20 +136,15 @@ subtest 'Concurrent async queries' => sub {
     my $user_rs = $schema->resultset('User');
 
     # Fire two queries simultaneously and wait for both
-    my $f_count  = $user_rs->count;
-    my $f_all    = $user_rs->search({ active => 1 })->all;
+    my $f_count = $user_rs->count;
+    my $f_all   = $user_rs->search({ active => 1 })->all;
 
     my ($count, $active) = Future->needs_all($f_count, $f_all)->get;
 
-    cmp_ok($count,         '>=', 1, 'Concurrent count() returned a result');
-    isa_ok($active,        'ARRAY', 'Concurrent search()->all() returned arrayref');
+    cmp_ok($count,  '>=', 1, 'Concurrent count() returned a result');
+    isa_ok($active, 'ARRAY', 'Concurrent search()->all() returned arrayref');
 };
 
 $schema->disconnect;
-
-drop_table_if_exists($raw_dbh, 'orders');
-drop_table_if_exists($raw_dbh, 'users');
-
-$raw_dbh->disconnect;
 
 done_testing;

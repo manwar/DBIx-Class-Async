@@ -4,7 +4,7 @@ use strict;
 use warnings;
 use version;
 
-our $VERSION   = qv('v1.0.1');
+our $VERSION   = qv('v1.0.2');
 our $AUTHORITY = 'cpan:MANWAR';
 
 use parent 'DBIx::Class::Async::Exception';
@@ -16,7 +16,7 @@ relationship names used in queries
 
 =head1 VERSION
 
-Version v1.0.1
+Version v1.0.2
 
 =head1 SYNOPSIS
 
