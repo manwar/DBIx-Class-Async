@@ -1,5 +1,18 @@
 Revision history for DBIx::Class::Async
 
+v1.0.3   2026-05-06
+         [IMPROVEMENTS]
+          - Fix non-deterministic failures in t/020-slice.t by forcing
+            'name' sort order, ensuring consistent results across
+            asynchronous worker insertions.
+          - Improve reliability of caching tests (t/148-caching.t and
+            t/149-scalar-ref-char-pk.t) by using high-precision fractional
+            seconds with SQLite's strftime.
+          - Explicitly disable Resultset caching in t/148-caching.t using
+            'cache_ttl => 0' to verify cache-bypass logic regardless of
+            execution speed.
+          - Fix incorrect HashRefInflator accessors in test suites.
+
 v1.0.2   2026-05-06
          [IMPROVEMENTS]
          - Tidied up unit test for Oracle and MySQL to use deploy().

@@ -4,7 +4,7 @@ use strict;
 use warnings;
 use version;
 
-our $VERSION   = qv('v1.0.2');
+our $VERSION   = qv('v1.0.3');
 our $AUTHORITY = 'cpan:MANWAR';
 
 use parent 'DBIx::Class::Async::Exception';
@@ -16,7 +16,7 @@ columns on insert
 
 =head1 VERSION
 
-Version v1.0.2
+Version v1.0.3
 
 =head1 SYNOPSIS
 
