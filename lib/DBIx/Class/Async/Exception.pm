@@ -4,7 +4,7 @@ use strict;
 use warnings;
 use version;
 
-our $VERSION   = qv('v1.0.7');
+our $VERSION   = qv('v1.0.8');
 our $AUTHORITY = 'cpan:MANWAR';
 
 use overload
@@ -18,7 +18,7 @@ DBIx::Class::Async::Exception - Base class for DBIx::Class::Async exceptions
 
 =head1 VERSION
 
-Version v1.0.7
+Version v1.0.8
 
 =head1 SYNOPSIS
 
