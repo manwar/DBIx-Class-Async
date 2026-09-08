@@ -4,7 +4,7 @@ use strict;
 use warnings;
 use version;
 
-our $VERSION   = qv('v1.0.8');
+our $VERSION   = qv('v1.0.9');
 our $AUTHORITY = 'cpan:MANWAR';
 
 =encoding utf8
@@ -15,7 +15,7 @@ DBIx::Class::Async - Non-blocking, multi-worker asynchronous wrapper for DBIx::C
 
 =head1 VERSION
 
-Version v1.0.8
+Version v1.0.9
 
 =head1 DISCLAIMER
 
@@ -1206,6 +1206,17 @@ sub _resolve_placeholders {
 
     if (ref $item eq 'HASH') {
         for my $key (keys %$item) {
+            # CPANSec CWE-89: never substitute register values into the
+            # 'sql' key of a txn_do/txn_batch step. That string is handed
+            # to $dbh->do($step->{sql}, ...) as literal SQL text, so any
+            # substitution here, even the "exact match" swap, would splice
+            # a value directly into a query instead of passing it as a
+            # genuine DBI bind parameter. Chained values that need to reach
+            # a 'raw' step's query MUST go through the 'bind' arrayref
+            # (still safely resolved below) with a placeholder (?) in 'sql',
+            # never through inline text substitution.
+            next if $key eq 'sql';
+
             if (ref $item->{$key}) {
                 # Dive deeper into nested structures
                 _resolve_placeholders($item->{$key}, $reg);

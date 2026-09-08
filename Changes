@@ -1,5 +1,40 @@
 Revision history for DBIx::Class::Async
 
+v1.0.9   2026-09-08
+         [SECURITY]
+         - Fixed a SQL injection (CWE-89) in txn_do's variable-chaining
+           feature. _resolve_placeholders/_interpolate_string substituted
+           register values (e.g. "$stepname.id", populated from a prior
+           step's row primary key) directly into arbitrary strings via
+           unescaped text replacement, including the 'sql' field of a
+           { action => 'raw', sql => ..., bind => [...] } step, which is
+           executed as literal SQL text via $dbh->do(). If a table's
+           primary key value can be influenced by the caller (e.g. a
+           client-supplied slug/username used as a string primary key,
+           not an uncommon pattern, and not something the auto-increment
+           happy path guards against), that value flowed unescaped into
+           the SQL text, bypassing WHERE-clause scoping and any other
+           part of the statement. This is a real, demonstrated
+           injection, not merely a theoretical concern: it matched the
+           library's own previously-shipped SYNOPSIS example and its own
+           t/139-txn-do.t test, which exercised exactly this
+           substitution as intended, documented behaviour.
+         - _resolve_placeholders no longer touches the 'sql' key of a
+           step under any circumstance. Chained values reaching a raw
+           step now MUST go through the 'bind' arrayref with a '?'
+           placeholder in 'sql', substitution into 'bind' array
+           elements was already safe (it becomes a genuine DBI bind
+           parameter) and is unchanged. Documentation in
+           DBIx::Class::Async::Storage::DBI updated to show the safe
+           pattern and warn against the unsafe one.
+         - Rewrote t/139-txn-do.t's "Raw SQL String Interpolation" test,
+           which previously asserted the vulnerable behaviour as
+           correct. It now verifies the safe bind-parameter pattern
+           works, and that a literal "$name.id" left in raw SQL text is
+           no longer silently substituted (it now surfaces as a query
+           error and the whole transaction rolls back atomically,
+           rather than injecting).
+
 v1.0.8   2026-09-08
          [SECURITY]
          - An authorisation bypass was corrected using a cache key
