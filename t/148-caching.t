@@ -319,4 +319,63 @@ subtest 'Cache statistics' => sub {
     $schema->disconnect;
 };
 
+subtest 'update() invalidates the query cache (CPANSec regression)' => sub {
+    my $db_file = create_test_db();
+
+    my $schema = DBIx::Class::Async::Schema->connect(
+        "dbi:SQLite:dbname=$db_file", undef, undef, {},
+        {
+            workers      => 2,
+            schema_class => 'TestSchema',
+            async_loop   => $loop,
+            cache_ttl    => 60,
+        }
+    );
+
+    $schema->await($schema->deploy({ add_drop_table => 1 }));
+
+    if ($schema && $schema->{_async_db}{_cache}) {
+        $schema->{_async_db}{_cache}->clear;
+    }
+
+    # Create a user
+    $schema->await($schema->resultset('User')->create({
+        name   => 'Update Cache User',
+        email  => 'updatecache@example.com',
+        age    => 25,
+        active => 1,
+    }));
+
+    # First query, populates the cache with age=25
+    my $result1 = $schema->await(
+        $schema->resultset('User')
+               ->search({ id => 1 })
+               ->all
+    );
+    is($result1->[0]->age, 25, 'First query returned age=25 and is now cached');
+
+    # Update via a ResultSet with a plain (non-PK) condition, followed
+    # immediately by a query using a different (PK) condition, this
+    # combination is what the discarded single-row cache key would have
+    # missed even if it had been passed to clear_cache.
+    $schema->await(
+        $schema->resultset('User')
+               ->search({ email => 'updatecache@example.com' })
+               ->update({ age   => 99 })
+    );
+
+    # Same identical query as before the update, must NOT return stale
+    # cached data. Prior to the fix, update() computed a cache key and
+    # discarded it, so this would incorrectly return age=25 for the rest
+    # of the TTL.
+    my $result2 = $schema->await(
+        $schema->resultset('User')
+               ->search({ id => 1 })
+               ->all
+    );
+    is($result2->[0]->age, 99, 'Query after update() sees fresh data, not the stale cached row');
+
+    $schema->disconnect;
+};
+
 done_testing;

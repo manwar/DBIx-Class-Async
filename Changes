@@ -1,5 +1,21 @@
 Revision history for DBIx::Class::Async
 
+v1.0.7   2026-09-08
+         [SECURITY]
+         - The issue with ResultSet::update() not working properly when
+           invalidating the query cache has been resolved. While update()
+           was able to create a key for invalidating the cache, it was not
+           able to call clear_cache afterwards. Because cache_ttl was on,
+           any read action conducted after the update would not return any
+           new values. This meant that any changes made to the database
+           would not be reflected in the read statements as it kept
+           returning information that had already been updated long ago.
+           In order to fix the issue with update(), it was made that
+           update() should always call clear_cache just the same way as
+           create() and delete() do.
+         - Added a regression test (t/148-caching.t) reproducing the
+           stale read and verifying update() now invalidates the cache.
+
 v1.0.6   2026-09-05
          [TEST SUITE]
          - Fixed t/135-single.t to cover the issue #12 reported by @eserte.

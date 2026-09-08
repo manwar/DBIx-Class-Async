@@ -4,7 +4,7 @@ use strict;
 use warnings;
 use version;
 
-our $VERSION   = qv('v1.0.6');
+our $VERSION   = qv('v1.0.7');
 our $AUTHORITY = 'cpan:MANWAR';
 
 =head1 NAME
@@ -13,7 +13,7 @@ DBIx::Class::Async::ResultSet - Non-blocking resultset proxy with Future-based e
 
 =head1 VERSION
 
-Version v1.0.6
+Version v1.0.7
 
 =head1 SYNOPSIS
 
@@ -3154,22 +3154,24 @@ sub update {
         $cond    = $self->{_cond};
     }
 
-    my @pk_cols = $self->result_source->primary_columns;
-    my $cache_key;
-
-    if (ref($cond) eq 'HASH' && @pk_cols) {
-        my %pk_cond = map {
-            $_ => $cond->{$_}
-        } grep {
-            exists $cond->{$_}
-        } @pk_cols;
-
-        if (%pk_cond) {
-            $cache_key = $self->_generate_cache_key(0, \%pk_cond);
-        }
-    }
-
-    $cache_key ||= $self->_generate_cache_key(0, $cond);
+    # Cache Invalidation
+    #
+    # The update() function follows a set-based logic. Since the conditional
+    # operator can match none, one, or several rows, any per-row caching
+    # using the primary key as a cache key is insufficient for correctness
+    # as it may not cover other caches that include rows affected by this
+    # update operation in their result set. To avoid stale reads, perform
+    # invalidation at the source level, as it is done in other sibling write
+    # operations such as create() and delete(), which always invoke the
+    # clear_cache() function.The update() function follows a set-based
+    # logic. Since the conditional operator can match none, one, or several
+    # rows, any per-row caching using the primary key as a cache key is
+    # insufficient for correctness as it may not cover other caches that
+    # include rows affected by this update operation in their result set.
+    # To avoid stale reads, perform invalidation at the source level, as it
+    # is done in other sibling write operations such as create() and
+    # delete(), which always invoke the clear_cache() function.
+    $self->clear_cache;
 
     my $db = $self->{_async_db};
     my $inflators = $db->{_custom_inflators}{ $self->{_source_name} } || {};
